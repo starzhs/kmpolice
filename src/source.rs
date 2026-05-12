@@ -5,6 +5,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
+use std::collections::HashSet;
 use walkdir::WalkDir;
 
 use crate::config::{Config, PathMatcher};
@@ -27,12 +28,36 @@ pub fn load_from_paths(
 }
 
 pub fn load_from_git(repo: &Path, git_ref: &str, config: &Config) -> Result<ProjectSnapshot> {
+    load_from_git_scoped(repo, git_ref, config, None)
+}
+
+pub fn load_from_git_scoped(
+    repo: &Path,
+    git_ref: &str,
+    config: &Config,
+    changed_paths: Option<&HashSet<String>>,
+) -> Result<ProjectSnapshot> {
     let matcher = config.path_matcher()?;
     let files = git_ls_tree(repo, git_ref)?;
 
-    let kotlin_files =
-        collect_git_files(repo, git_ref, &files, "kt", &matcher, &config.kotlin_roots)?;
-    let ios_files = collect_git_files(repo, git_ref, &files, "swift", &matcher, &config.ios_roots)?;
+    let kotlin_files = collect_git_files(
+        repo,
+        git_ref,
+        &files,
+        "kt",
+        &matcher,
+        &config.kotlin_roots,
+        changed_paths,
+    )?;
+    let ios_files = collect_git_files(
+        repo,
+        git_ref,
+        &files,
+        "swift",
+        &matcher,
+        &config.ios_roots,
+        changed_paths,
+    )?;
 
     Ok(ProjectSnapshot {
         label: git_ref.to_string(),
@@ -42,12 +67,32 @@ pub fn load_from_git(repo: &Path, git_ref: &str, config: &Config) -> Result<Proj
 }
 
 pub fn load_from_worktree(repo: &Path, config: &Config) -> Result<ProjectSnapshot> {
+    load_from_worktree_scoped(repo, config, None)
+}
+
+pub fn load_from_worktree_scoped(
+    repo: &Path,
+    config: &Config,
+    changed_paths: Option<&HashSet<String>>,
+) -> Result<ProjectSnapshot> {
     let matcher = config.path_matcher()?;
     let files = git_ls_files_worktree(repo)?;
-    let kotlin_files =
-        collect_worktree_git_list_files(repo, &files, "kt", &matcher, &config.kotlin_roots)?;
-    let ios_files =
-        collect_worktree_git_list_files(repo, &files, "swift", &matcher, &config.ios_roots)?;
+    let kotlin_files = collect_worktree_git_list_files(
+        repo,
+        &files,
+        "kt",
+        &matcher,
+        &config.kotlin_roots,
+        changed_paths,
+    )?;
+    let ios_files = collect_worktree_git_list_files(
+        repo,
+        &files,
+        "swift",
+        &matcher,
+        &config.ios_roots,
+        changed_paths,
+    )?;
 
     Ok(ProjectSnapshot {
         label: "WORKTREE".to_string(),
@@ -117,6 +162,40 @@ pub fn is_shallow_repository(repo: &Path) -> Result<bool> {
     Ok(output.trim() == "true")
 }
 
+pub fn git_changed_files_between(
+    repo: &Path,
+    base_ref: &str,
+    head_ref: &str,
+) -> Result<HashSet<String>> {
+    let output = git_command(repo, ["diff", "--name-only", base_ref, head_ref])?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(normalize_git_path)
+        .collect())
+}
+
+pub fn git_changed_files_worktree(repo: &Path) -> Result<HashSet<String>> {
+    let output = git_command(repo, ["status", "--porcelain"])?;
+    let mut changed = HashSet::new();
+    for line in output
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+    {
+        let Some(rest) = line.get(3..) else {
+            continue;
+        };
+        if let Some((_, new_path)) = rest.split_once(" -> ") {
+            changed.insert(normalize_git_path(new_path.trim()));
+        } else {
+            changed.insert(normalize_git_path(rest.trim()));
+        }
+    }
+    Ok(changed)
+}
+
 fn collect_path_files(
     root: &Path,
     extension: &str,
@@ -165,6 +244,7 @@ fn collect_git_files(
     extension: &str,
     matcher: &PathMatcher,
     roots: &[String],
+    changed_paths: Option<&HashSet<String>>,
 ) -> Result<Vec<SourceFile>> {
     let mut files = Vec::new();
     let mut candidates = Vec::new();
@@ -188,6 +268,12 @@ fn collect_git_files(
 
         if !matcher.is_included(path) {
             continue;
+        }
+        if let Some(changed) = changed_paths {
+            let normalized = normalize_git_path(path);
+            if !changed.contains(&normalized) {
+                continue;
+            }
         }
 
         candidates.push(path);
@@ -241,6 +327,7 @@ fn collect_worktree_git_list_files(
     extension: &str,
     matcher: &PathMatcher,
     roots: &[String],
+    changed_paths: Option<&HashSet<String>>,
 ) -> Result<Vec<SourceFile>> {
     let mut collected = Vec::new();
 
@@ -265,6 +352,12 @@ fn collect_worktree_git_list_files(
 
         if !matcher.is_included(&relative) {
             continue;
+        }
+        if let Some(changed) = changed_paths {
+            let normalized = normalize_git_path(&relative);
+            if !changed.contains(&normalized) {
+                continue;
+            }
         }
 
         let absolute_path = repo.join(path);
@@ -320,6 +413,10 @@ fn is_ignored_generated_path(path: &str) -> bool {
     generated_markers
         .iter()
         .any(|marker| normalized.contains(marker))
+}
+
+fn normalize_git_path(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 fn git_ls_tree(repo: &Path, git_ref: &str) -> Result<Vec<String>> {

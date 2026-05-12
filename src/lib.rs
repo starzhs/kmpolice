@@ -17,8 +17,9 @@ use config::{Config, Severity};
 use model::{Diagnostic, ProjectSnapshot};
 use report::{render_json, render_text};
 use source::{
-    has_meaningful_code_diff, has_unmerged_paths, is_head_detached, is_shallow_repository,
-    is_worktree_dirty, load_from_git, load_from_paths, load_from_worktree, merge_base, resolve_ref,
+    git_changed_files_between, git_changed_files_worktree, has_meaningful_code_diff,
+    has_unmerged_paths, is_head_detached, is_shallow_repository, is_worktree_dirty,
+    load_from_git_scoped, load_from_paths, load_from_worktree_scoped, merge_base, resolve_ref,
 };
 
 pub fn run() -> Result<i32> {
@@ -84,7 +85,21 @@ pub fn run() -> Result<i32> {
                 Vec::new()
             } else {
                 eprintln!("[kmpolice] mode=git: loading base snapshot...");
-                let base_snapshot = load_from_git(&args.repo, &args.base_ref, &config)?;
+                let changed_paths = if base_sha == head_sha && worktree_dirty {
+                    git_changed_files_worktree(&args.repo)?
+                } else {
+                    git_changed_files_between(&args.repo, &args.base_ref, &args.head_ref)?
+                };
+                eprintln!(
+                    "[kmpolice] mode=git: changed paths scope={}",
+                    changed_paths.len()
+                );
+                let base_snapshot = load_from_git_scoped(
+                    &args.repo,
+                    &args.base_ref,
+                    &config,
+                    Some(&changed_paths),
+                )?;
                 eprintln!(
                     "[kmpolice] mode=git: base kotlin_files={} ios_files={}",
                     base_snapshot.kotlin_files.len(),
@@ -95,9 +110,9 @@ pub fn run() -> Result<i32> {
                     eprintln!(
                         "[kmpolice] mode=git: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
                     );
-                    load_from_worktree(&args.repo, &config)?
+                    load_from_worktree_scoped(&args.repo, &config, Some(&changed_paths))?
                 } else {
-                    load_from_git(&args.repo, &args.head_ref, &config)?
+                    load_from_git_scoped(&args.repo, &args.head_ref, &config, Some(&changed_paths))?
                 };
                 eprintln!(
                     "[kmpolice] mode=git: head kotlin_files={} ios_files={} -> analyzing...",
@@ -192,8 +207,18 @@ pub fn run() -> Result<i32> {
                 Vec::new()
             } else {
                 eprintln!("[kmpolice] mode=mr: loading base snapshot...");
+                let changed_paths = if base_sha == head_sha && worktree_dirty {
+                    git_changed_files_worktree(&args.repo)?
+                } else {
+                    git_changed_files_between(&args.repo, &base_ref, &head_ref)?
+                };
+                eprintln!(
+                    "[kmpolice] mode=mr: changed paths scope={}",
+                    changed_paths.len()
+                );
 
-                let base_snapshot = load_from_git(&args.repo, &base_ref, &config)?;
+                let base_snapshot =
+                    load_from_git_scoped(&args.repo, &base_ref, &config, Some(&changed_paths))?;
                 eprintln!(
                     "[kmpolice] mode=mr: base kotlin_files={} ios_files={}",
                     base_snapshot.kotlin_files.len(),
@@ -204,9 +229,9 @@ pub fn run() -> Result<i32> {
                     eprintln!(
                         "[kmpolice] mode=mr: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
                     );
-                    load_from_worktree(&args.repo, &config)?
+                    load_from_worktree_scoped(&args.repo, &config, Some(&changed_paths))?
                 } else {
-                    load_from_git(&args.repo, &head_ref, &config)?
+                    load_from_git_scoped(&args.repo, &head_ref, &config, Some(&changed_paths))?
                 };
                 eprintln!(
                     "[kmpolice] mode=mr: head kotlin_files={} ios_files={} -> analyzing...",
