@@ -24,19 +24,49 @@ pub fn run() -> Result<i32> {
 
     let diagnostics = match &cli.command {
         CheckCommand::Paths(args) => {
+            eprintln!("[kmpolice] mode=paths: collecting files...");
             let snapshot = load_from_paths(&args.kotlin, &args.ios, &config)?;
+            eprintln!(
+                "[kmpolice] mode=paths: kotlin_files={} ios_files={} -> analyzing...",
+                snapshot.kotlin_files.len(),
+                snapshot.ios_files.len()
+            );
             let mut diagnostics = compare_project(&snapshot, &config)?;
             downgrade_unverified_type_usage(&mut diagnostics);
+            eprintln!(
+                "[kmpolice] mode=paths: completed diagnostics={}",
+                diagnostics.len()
+            );
             diagnostics
         }
         CheckCommand::Git(args) => {
+            eprintln!(
+                "[kmpolice] mode=git: resolving refs base={} head={}...",
+                args.base_ref, args.head_ref
+            );
             let base_sha = resolve_ref(&args.repo, &args.base_ref)?;
             let head_sha = resolve_ref(&args.repo, &args.head_ref)?;
             if base_sha == head_sha {
+                eprintln!(
+                    "[kmpolice] mode=git: base and head are identical ({}), fast exit.",
+                    base_sha
+                );
                 Vec::new()
             } else {
+            eprintln!("[kmpolice] mode=git: loading base snapshot...");
             let base_snapshot = load_from_git(&args.repo, &args.base_ref, &config)?;
+            eprintln!(
+                "[kmpolice] mode=git: base kotlin_files={} ios_files={}",
+                base_snapshot.kotlin_files.len(),
+                base_snapshot.ios_files.len()
+            );
+            eprintln!("[kmpolice] mode=git: loading head snapshot...");
             let head_snapshot = load_from_git(&args.repo, &args.head_ref, &config)?;
+            eprintln!(
+                "[kmpolice] mode=git: head kotlin_files={} ios_files={} -> analyzing...",
+                head_snapshot.kotlin_files.len(),
+                head_snapshot.ios_files.len()
+            );
 
             let base_diagnostics = compare_project(&base_snapshot, &config)?;
             let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
@@ -52,23 +82,52 @@ pub fn run() -> Result<i32> {
             }
 
             if args.introduced_only {
-                introduced_diagnostics(base_diagnostics, head_diagnostics)
+                let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);
+                eprintln!(
+                    "[kmpolice] mode=git: completed introduced_only diagnostics={}",
+                    introduced.len()
+                );
+                introduced
             } else {
+                eprintln!(
+                    "[kmpolice] mode=git: completed diagnostics={}",
+                    head_diagnostics.len()
+                );
                 head_diagnostics
             }
             }
         }
         CheckCommand::Mr(args) => {
+            eprintln!(
+                "[kmpolice] mode=mr: resolving merge-base target={} head=HEAD...",
+                args.target
+            );
             let head_ref = "HEAD".to_string();
             let base_ref = merge_base(&args.repo, &args.target, &head_ref)?;
             let base_sha = resolve_ref(&args.repo, &base_ref)?;
             let head_sha = resolve_ref(&args.repo, &head_ref)?;
             if base_sha == head_sha {
+                eprintln!(
+                    "[kmpolice] mode=mr: base and head are identical ({}), fast exit.",
+                    base_sha
+                );
                 Vec::new()
             } else {
+            eprintln!("[kmpolice] mode=mr: loading base snapshot...");
 
             let base_snapshot = load_from_git(&args.repo, &base_ref, &config)?;
+            eprintln!(
+                "[kmpolice] mode=mr: base kotlin_files={} ios_files={}",
+                base_snapshot.kotlin_files.len(),
+                base_snapshot.ios_files.len()
+            );
+            eprintln!("[kmpolice] mode=mr: loading head snapshot...");
             let head_snapshot = load_from_git(&args.repo, &head_ref, &config)?;
+            eprintln!(
+                "[kmpolice] mode=mr: head kotlin_files={} ios_files={} -> analyzing...",
+                head_snapshot.kotlin_files.len(),
+                head_snapshot.ios_files.len()
+            );
 
             let base_diagnostics = compare_project(&base_snapshot, &config)?;
             let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
@@ -83,7 +142,12 @@ pub fn run() -> Result<i32> {
                 diagnostic.head_ref = Some(head_ref.clone());
             }
 
-            introduced_diagnostics(base_diagnostics, head_diagnostics)
+            let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);
+            eprintln!(
+                "[kmpolice] mode=mr: completed introduced diagnostics={}",
+                introduced.len()
+            );
+            introduced
             }
         }
         CheckCommand::Check(_) => unreachable!("cli command should be normalized before execution"),
