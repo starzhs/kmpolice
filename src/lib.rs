@@ -16,7 +16,7 @@ use cli::{CheckCommand, Cli, OutputFormat};
 use config::{Config, Severity};
 use model::{Diagnostic, ProjectSnapshot};
 use report::{render_json, render_text};
-use source::{load_from_git, load_from_paths, merge_base, resolve_ref};
+use source::{is_worktree_dirty, load_from_git, load_from_paths, load_from_worktree, merge_base, resolve_ref};
 
 pub fn run() -> Result<i32> {
     let cli = Cli::parse().normalized_command();
@@ -46,9 +46,10 @@ pub fn run() -> Result<i32> {
             );
             let base_sha = resolve_ref(&args.repo, &args.base_ref)?;
             let head_sha = resolve_ref(&args.repo, &args.head_ref)?;
-            if base_sha == head_sha {
+            let worktree_dirty = is_worktree_dirty(&args.repo)?;
+            if base_sha == head_sha && !worktree_dirty {
                 eprintln!(
-                    "[kmpolice] mode=git: base and head are identical ({}), fast exit.",
+                    "[kmpolice] mode=git: base and head are identical ({}), worktree is clean, fast exit.",
                     base_sha
                 );
                 Vec::new()
@@ -61,7 +62,12 @@ pub fn run() -> Result<i32> {
                 base_snapshot.ios_files.len()
             );
             eprintln!("[kmpolice] mode=git: loading head snapshot...");
-            let head_snapshot = load_from_git(&args.repo, &args.head_ref, &config)?;
+            let head_snapshot = if base_sha == head_sha && worktree_dirty {
+                eprintln!("[kmpolice] mode=git: refs are identical but worktree is dirty, using WORKTREE as head snapshot.");
+                load_from_worktree(&args.repo, &config)?
+            } else {
+                load_from_git(&args.repo, &args.head_ref, &config)?
+            };
             eprintln!(
                 "[kmpolice] mode=git: head kotlin_files={} ios_files={} -> analyzing...",
                 head_snapshot.kotlin_files.len(),
@@ -78,7 +84,11 @@ pub fn run() -> Result<i32> {
 
             for diagnostic in &mut head_diagnostics {
                 diagnostic.base_ref = Some(args.base_ref.clone());
-                diagnostic.head_ref = Some(args.head_ref.clone());
+                diagnostic.head_ref = Some(if base_sha == head_sha && worktree_dirty {
+                    "WORKTREE".to_string()
+                } else {
+                    args.head_ref.clone()
+                });
             }
 
             if args.introduced_only {
@@ -106,9 +116,10 @@ pub fn run() -> Result<i32> {
             let base_ref = merge_base(&args.repo, &args.target, &head_ref)?;
             let base_sha = resolve_ref(&args.repo, &base_ref)?;
             let head_sha = resolve_ref(&args.repo, &head_ref)?;
-            if base_sha == head_sha {
+            let worktree_dirty = is_worktree_dirty(&args.repo)?;
+            if base_sha == head_sha && !worktree_dirty {
                 eprintln!(
-                    "[kmpolice] mode=mr: base and head are identical ({}), fast exit.",
+                    "[kmpolice] mode=mr: base and head are identical ({}), worktree is clean, fast exit.",
                     base_sha
                 );
                 Vec::new()
@@ -122,7 +133,12 @@ pub fn run() -> Result<i32> {
                 base_snapshot.ios_files.len()
             );
             eprintln!("[kmpolice] mode=mr: loading head snapshot...");
-            let head_snapshot = load_from_git(&args.repo, &head_ref, &config)?;
+            let head_snapshot = if base_sha == head_sha && worktree_dirty {
+                eprintln!("[kmpolice] mode=mr: refs are identical but worktree is dirty, using WORKTREE as head snapshot.");
+                load_from_worktree(&args.repo, &config)?
+            } else {
+                load_from_git(&args.repo, &head_ref, &config)?
+            };
             eprintln!(
                 "[kmpolice] mode=mr: head kotlin_files={} ios_files={} -> analyzing...",
                 head_snapshot.kotlin_files.len(),
@@ -139,7 +155,11 @@ pub fn run() -> Result<i32> {
 
             for diagnostic in &mut head_diagnostics {
                 diagnostic.base_ref = Some(base_ref.clone());
-                diagnostic.head_ref = Some(head_ref.clone());
+                diagnostic.head_ref = Some(if base_sha == head_sha && worktree_dirty {
+                    "WORKTREE".to_string()
+                } else {
+                    head_ref.clone()
+                });
             }
 
             let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);

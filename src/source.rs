@@ -40,6 +40,21 @@ pub fn load_from_git(repo: &Path, git_ref: &str, config: &Config) -> Result<Proj
     })
 }
 
+pub fn load_from_worktree(repo: &Path, config: &Config) -> Result<ProjectSnapshot> {
+    let matcher = config.path_matcher()?;
+    let files = git_ls_files_worktree(repo)?;
+    let kotlin_files =
+        collect_worktree_git_list_files(repo, &files, "kt", &matcher, &config.kotlin_roots)?;
+    let ios_files =
+        collect_worktree_git_list_files(repo, &files, "swift", &matcher, &config.ios_roots)?;
+
+    Ok(ProjectSnapshot {
+        label: "WORKTREE".to_string(),
+        kotlin_files,
+        ios_files,
+    })
+}
+
 pub fn merge_base(repo: &Path, target: &str, head_ref: &str) -> Result<String> {
     let output = git_command(repo, ["merge-base", target, head_ref])?;
     Ok(output.trim().to_string())
@@ -48,6 +63,11 @@ pub fn merge_base(repo: &Path, target: &str, head_ref: &str) -> Result<String> {
 pub fn resolve_ref(repo: &Path, git_ref: &str) -> Result<String> {
     let output = git_command(repo, ["rev-parse", git_ref])?;
     Ok(output.trim().to_string())
+}
+
+pub fn is_worktree_dirty(repo: &Path) -> Result<bool> {
+    let output = git_command(repo, ["status", "--porcelain"])?;
+    Ok(!output.trim().is_empty())
 }
 
 fn collect_path_files(
@@ -127,6 +147,72 @@ fn collect_git_files(
     }
 
     Ok(files)
+}
+
+fn collect_worktree_git_list_files(
+    repo: &Path,
+    files: &[String],
+    extension: &str,
+    matcher: &PathMatcher,
+    roots: &[String],
+) -> Result<Vec<SourceFile>> {
+    let mut collected = Vec::new();
+
+    for path in files {
+        if Path::new(path).extension() != Some(OsStr::new(extension)) {
+            continue;
+        }
+
+        let relative = path.replace('\\', "/");
+
+        if !roots.is_empty()
+            && !roots
+                .iter()
+                .any(|root| relative.starts_with(root.trim_end_matches('/')))
+        {
+            continue;
+        }
+
+        if !matcher.is_included(&relative) {
+            continue;
+        }
+
+        let absolute_path = repo.join(path);
+        let contents = fs::read_to_string(&absolute_path)
+            .with_context(|| format!("failed to read source file {}", absolute_path.display()))?;
+
+        collected.push(SourceFile {
+            path: relative,
+            contents,
+            snapshot: Some("WORKTREE".to_string()),
+        });
+    }
+
+    Ok(collected)
+}
+
+fn git_ls_files_worktree(repo: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .output()
+        .with_context(|| format!("failed to run git in {}", repo.display()))?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
 }
 
 fn git_ls_tree(repo: &Path, git_ref: &str) -> Result<Vec<String>> {
