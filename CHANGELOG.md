@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
 ### Summary
 - Git robustness pass for `git`/`mr` modes (single improvement batch).
