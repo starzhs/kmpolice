@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1
+
+### Summary
+- Maintenance release: progress reporting, fast-exit for identical refs, and pure Swift enum/sealed matching.
+
+### Changes
+- Added stderr progress reporting for `paths`, `git`, `mr`.
+- Added fast-exit in `git`/`mr` when `base == head`.
+- Added pure Swift support for enum/sealed checks (`switch value` and `if value is Type`).
+
 ## 0.1.0
 
 ### Summary

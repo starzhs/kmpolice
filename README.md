@@ -71,7 +71,7 @@ Repository contains brew packaging scaffolding:
 
 Recommended publish flow:
 
-1. Push git tag, e.g. `v0.1.0`.
+1. Push git tag, e.g. `v0.1.1`.
 2. Wait for GitHub Actions `release` workflow to publish archives and `.sha256` files.
 3. Create/update tap repository (usually `homebrew-kmpolice`) and place final `Formula/kmpolice.rb`.
 4. Fill URLs/SHA256 in formula from release artifacts.

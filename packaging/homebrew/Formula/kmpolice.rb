@@ -1,15 +1,15 @@
 class Kmpolice < Formula
   desc "Static checker for Kotlin Multiplatform -> iOS Swift API impact"
-  homepage "https://github.com/<ORG_OR_USER>/kmpolice"
+  homepage "https://github.com/starzhs/kmpolice"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/<ORG_OR_USER>/kmpolice/releases/download/v0.1.0/kmpolice-aarch64-apple-darwin.tar.gz"
-      sha256 "<SHA256_ARM64_MACOS>"
+      url "https://github.com/starzhs/kmpolice/releases/download/v0.1.0/kmpolice-aarch64-apple-darwin.tar.gz"
+      sha256 "55941fffb6296ea202a2a79cf931def196eaa610292519c5ace62c94402c6e8c"
     else
-      url "https://github.com/<ORG_OR_USER>/kmpolice/releases/download/v0.1.0/kmpolice-x86_64-apple-darwin.tar.gz"
-      sha256 "<SHA256_X64_MACOS>"
+      url "https://github.com/starzhs/kmpolice/releases/download/v0.1.0/kmpolice-x86_64-apple-darwin.tar.gz"
+      sha256 "8f32ed29f26297a5aadc3f9d8cdda660d56545ea8ba54ebd4acebe72d478f64d"
     end
   end
 

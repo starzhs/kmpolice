@@ -4,7 +4,7 @@
 - [x] реализовано
 - [ ] в план
 
-## v0.1.0 Scope
+## v0.1.1 Scope
 - [x] Фокус на `git`/`mr` как на основном надёжном режиме (diff-aware)
 - [x] Источник истины — Kotlin API (`base` vs `head`)
 - [x] Проверяем impact в Swift по фактам добавления/удаления/изменения Kotlin-символов
@@ -20,7 +20,7 @@
 - [x] Companion object/member checks
 - [x] Diff-aware severity for `kotlin_type_usage_missing`
 
-## Усиления v0.1.0
+## Усиления v0.1.1
 - [x] JSON evidence (`diagnostic.evidence[]`) для объяснимости вывода
 - [x] Softening reasons для неоднозначных кейсов (`softened_due_to_ambiguity`, etc.)
 - [x] Явный список dependency manifests для проверки изменений в diff

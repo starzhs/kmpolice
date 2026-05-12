@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
   echo "usage: $0 <repo-owner> <version> <sha256_arm64_macos> <sha256_x64_macos>" >&2
-  echo "example: $0 myorg v0.1.0 abc... def..." >&2
+  echo "example: $0 myorg v0.1.1 abc... def..." >&2
   exit 1
 fi
 

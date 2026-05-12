@@ -5,8 +5,8 @@
 Push a version tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 Workflow `.github/workflows/release.yml` publishes:
@@ -40,7 +40,7 @@ Replace placeholders:
 Or render with helper:
 
 ```bash
-./scripts/render_brew_formula.sh <ORG_OR_USER> v0.1.0 <SHA_ARM> <SHA_X64>
+./scripts/render_brew_formula.sh <ORG_OR_USER> v0.1.1 <SHA_ARM> <SHA_X64>
 ```
 
 ## 4. Validate formula locally
