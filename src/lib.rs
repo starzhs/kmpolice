@@ -16,7 +16,7 @@ use cli::{CheckCommand, Cli, OutputFormat};
 use config::{Config, Severity};
 use model::{Diagnostic, ProjectSnapshot};
 use report::{render_json, render_text};
-use source::{load_from_git, load_from_paths, merge_base};
+use source::{load_from_git, load_from_paths, merge_base, resolve_ref};
 
 pub fn run() -> Result<i32> {
     let cli = Cli::parse().normalized_command();
@@ -30,6 +30,11 @@ pub fn run() -> Result<i32> {
             diagnostics
         }
         CheckCommand::Git(args) => {
+            let base_sha = resolve_ref(&args.repo, &args.base_ref)?;
+            let head_sha = resolve_ref(&args.repo, &args.head_ref)?;
+            if base_sha == head_sha {
+                Vec::new()
+            } else {
             let base_snapshot = load_from_git(&args.repo, &args.base_ref, &config)?;
             let head_snapshot = load_from_git(&args.repo, &args.head_ref, &config)?;
 
@@ -51,10 +56,16 @@ pub fn run() -> Result<i32> {
             } else {
                 head_diagnostics
             }
+            }
         }
         CheckCommand::Mr(args) => {
             let head_ref = "HEAD".to_string();
             let base_ref = merge_base(&args.repo, &args.target, &head_ref)?;
+            let base_sha = resolve_ref(&args.repo, &base_ref)?;
+            let head_sha = resolve_ref(&args.repo, &head_ref)?;
+            if base_sha == head_sha {
+                Vec::new()
+            } else {
 
             let base_snapshot = load_from_git(&args.repo, &base_ref, &config)?;
             let head_snapshot = load_from_git(&args.repo, &head_ref, &config)?;
@@ -73,6 +84,7 @@ pub fn run() -> Result<i32> {
             }
 
             introduced_diagnostics(base_diagnostics, head_diagnostics)
+            }
         }
         CheckCommand::Check(_) => unreachable!("cli command should be normalized before execution"),
     };

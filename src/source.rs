@@ -45,6 +45,11 @@ pub fn merge_base(repo: &Path, target: &str, head_ref: &str) -> Result<String> {
     Ok(output.trim().to_string())
 }
 
+pub fn resolve_ref(repo: &Path, git_ref: &str) -> Result<String> {
+    let output = git_command(repo, ["rev-parse", git_ref])?;
+    Ok(output.trim().to_string())
+}
+
 fn collect_path_files(
     root: &Path,
     extension: &str,
