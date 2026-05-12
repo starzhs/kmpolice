@@ -99,6 +99,7 @@ pub fn run() -> Result<i32> {
                     &args.base_ref,
                     &config,
                     Some(&changed_paths),
+                    None,
                 )?;
                 eprintln!(
                     "[kmpolice] mode=git: base kotlin_files={} ios_files={}",
@@ -110,9 +111,15 @@ pub fn run() -> Result<i32> {
                     eprintln!(
                         "[kmpolice] mode=git: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
                     );
-                    load_from_worktree_scoped(&args.repo, &config, Some(&changed_paths))?
+                    load_from_worktree_scoped(&args.repo, &config, Some(&changed_paths), None)?
                 } else {
-                    load_from_git_scoped(&args.repo, &args.head_ref, &config, Some(&changed_paths))?
+                    load_from_git_scoped(
+                        &args.repo,
+                        &args.head_ref,
+                        &config,
+                        Some(&changed_paths),
+                        None,
+                    )?
                 };
                 eprintln!(
                     "[kmpolice] mode=git: head kotlin_files={} ios_files={} -> analyzing...",
@@ -217,8 +224,13 @@ pub fn run() -> Result<i32> {
                     changed_paths.len()
                 );
 
-                let base_snapshot =
-                    load_from_git_scoped(&args.repo, &base_ref, &config, Some(&changed_paths))?;
+                let base_snapshot = load_from_git_scoped(
+                    &args.repo,
+                    &base_ref,
+                    &config,
+                    Some(&changed_paths),
+                    None,
+                )?;
                 eprintln!(
                     "[kmpolice] mode=mr: base kotlin_files={} ios_files={}",
                     base_snapshot.kotlin_files.len(),
@@ -229,9 +241,15 @@ pub fn run() -> Result<i32> {
                     eprintln!(
                         "[kmpolice] mode=mr: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
                     );
-                    load_from_worktree_scoped(&args.repo, &config, Some(&changed_paths))?
+                    load_from_worktree_scoped(&args.repo, &config, Some(&changed_paths), None)?
                 } else {
-                    load_from_git_scoped(&args.repo, &head_ref, &config, Some(&changed_paths))?
+                    load_from_git_scoped(
+                        &args.repo,
+                        &head_ref,
+                        &config,
+                        Some(&changed_paths),
+                        None,
+                    )?
                 };
                 eprintln!(
                     "[kmpolice] mode=mr: head kotlin_files={} ios_files={} -> analyzing...",

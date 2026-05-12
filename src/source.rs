@@ -28,14 +28,15 @@ pub fn load_from_paths(
 }
 
 pub fn load_from_git(repo: &Path, git_ref: &str, config: &Config) -> Result<ProjectSnapshot> {
-    load_from_git_scoped(repo, git_ref, config, None)
+    load_from_git_scoped(repo, git_ref, config, None, None)
 }
 
 pub fn load_from_git_scoped(
     repo: &Path,
     git_ref: &str,
     config: &Config,
-    changed_paths: Option<&HashSet<String>>,
+    kotlin_changed_paths: Option<&HashSet<String>>,
+    ios_changed_paths: Option<&HashSet<String>>,
 ) -> Result<ProjectSnapshot> {
     let matcher = config.path_matcher()?;
     let files = git_ls_tree(repo, git_ref)?;
@@ -47,7 +48,7 @@ pub fn load_from_git_scoped(
         "kt",
         &matcher,
         &config.kotlin_roots,
-        changed_paths,
+        kotlin_changed_paths,
     )?;
     let ios_files = collect_git_files(
         repo,
@@ -56,7 +57,7 @@ pub fn load_from_git_scoped(
         "swift",
         &matcher,
         &config.ios_roots,
-        changed_paths,
+        ios_changed_paths,
     )?;
 
     Ok(ProjectSnapshot {
@@ -67,13 +68,14 @@ pub fn load_from_git_scoped(
 }
 
 pub fn load_from_worktree(repo: &Path, config: &Config) -> Result<ProjectSnapshot> {
-    load_from_worktree_scoped(repo, config, None)
+    load_from_worktree_scoped(repo, config, None, None)
 }
 
 pub fn load_from_worktree_scoped(
     repo: &Path,
     config: &Config,
-    changed_paths: Option<&HashSet<String>>,
+    kotlin_changed_paths: Option<&HashSet<String>>,
+    ios_changed_paths: Option<&HashSet<String>>,
 ) -> Result<ProjectSnapshot> {
     let matcher = config.path_matcher()?;
     let files = git_ls_files_worktree(repo)?;
@@ -83,7 +85,7 @@ pub fn load_from_worktree_scoped(
         "kt",
         &matcher,
         &config.kotlin_roots,
-        changed_paths,
+        kotlin_changed_paths,
     )?;
     let ios_files = collect_worktree_git_list_files(
         repo,
@@ -91,7 +93,7 @@ pub fn load_from_worktree_scoped(
         "swift",
         &matcher,
         &config.ios_roots,
-        changed_paths,
+        ios_changed_paths,
     )?;
 
     Ok(ProjectSnapshot {
