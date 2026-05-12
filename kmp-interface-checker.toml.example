@@ -1,0 +1,22 @@
+kotlin_roots = ["shared/src/commonMain/kotlin"]
+ios_roots = ["iosApp", "ios"]
+
+include = ["**/*.kt", "**/*.swift"]
+exclude = ["**/build/**", "**/.build/**", "**/Generated/**", "**/Tests/**"]
+
+[[mappings]]
+kotlin = "com.example.api.UserGateway"
+ios = "UserGateway"
+
+[naming]
+strip_prefixes = ["Kmp", "Shared"]
+strip_suffixes = ["Protocol", "Adapter"]
+case_insensitive = true
+
+[ignore]
+diagnostics = []
+kotlin_symbols = []
+ios_symbols = []
+
+[severity]
+extra_member = "warning"

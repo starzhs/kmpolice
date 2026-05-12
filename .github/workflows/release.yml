@@ -1,0 +1,76 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Prepare archive
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/kmpolice dist/kmpolice
+          tar -C dist -czf kmpolice-${{ matrix.target }}.tar.gz kmpolice
+          shasum -a 256 kmpolice-${{ matrix.target }}.tar.gz > kmpolice-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmpolice-${{ matrix.target }}
+          path: |
+            kmpolice-${{ matrix.target }}.tar.gz
+            kmpolice-${{ matrix.target }}.tar.gz.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Flatten assets
+        run: |
+          mkdir -p out
+          find release-assets -type f -name "*.tar.gz" -exec cp {} out/ \;
+          find release-assets -type f -name "*.sha256" -exec cp {} out/ \;
+          ls -la out
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
