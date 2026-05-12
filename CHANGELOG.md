@@ -1,9 +1,10 @@
 # Changelog
 
-## 0.1.2
+## 0.1.3
 
 ### Summary
 - Git robustness pass for `git`/`mr` modes (single improvement batch).
+- Added runtime roots via CLI and elapsed-time progress for snapshot loading.
 
 ### Changes
 - Added unmerged state guard (`git ls-files -u`) with early explicit failure.
@@ -11,6 +12,8 @@
 - Added shallow repository awareness with merge-base remediation hint.
 - Added meaningful code-diff guard to ignore non-code/noise-only diffs (`*.kt`, `*.swift`, EOL-aware).
 - Added pragmatic filtering for obvious generated/build directories while collecting source files.
+- Added `--kotlin-root` / `--ios-root` for `git` and `mr` commands.
+- Added elapsed time to snapshot loading progress logs.
 
 ## 0.1.1
 

@@ -23,7 +23,7 @@ use source::{
 
 pub fn run() -> Result<i32> {
     let cli = Cli::parse().normalized_command();
-    let config = Config::load(cli.config_path())?;
+    let mut config = Config::load(cli.config_path())?;
 
     let diagnostics = match &cli.command {
         CheckCommand::Paths(args) => {
@@ -43,10 +43,16 @@ pub fn run() -> Result<i32> {
             diagnostics
         }
         CheckCommand::Git(args) => {
+            apply_roots_overrides(&mut config, &args.kotlin_roots, &args.ios_roots);
             if has_unmerged_paths(&args.repo)? {
                 return Err(anyhow::anyhow!(
                     "repository has unresolved merge conflicts (unmerged paths). Resolve conflicts before running kmpolice."
                 ));
+            }
+            if config.kotlin_roots.is_empty() || config.ios_roots.is_empty() {
+                eprintln!(
+                    "[kmpolice] mode=git: kotlin_roots/ios_roots are not fully configured; scanning can be slow on large repos."
+                );
             }
             if is_head_detached(&args.repo)? {
                 eprintln!("[kmpolice] mode=git: HEAD is detached; continuing with explicit refs.");
@@ -133,6 +139,12 @@ pub fn run() -> Result<i32> {
             }
         }
         CheckCommand::Mr(args) => {
+            apply_roots_overrides(&mut config, &args.kotlin_roots, &args.ios_roots);
+            if config.kotlin_roots.is_empty() || config.ios_roots.is_empty() {
+                eprintln!(
+                    "[kmpolice] mode=mr: kotlin_roots/ios_roots are not fully configured; scanning can be slow on large repos."
+                );
+            }
             if has_unmerged_paths(&args.repo)? {
                 return Err(anyhow::anyhow!(
                     "repository has unresolved merge conflicts (unmerged paths). Resolve conflicts before running kmpolice."
@@ -238,6 +250,15 @@ pub fn run() -> Result<i32> {
     println!("{output}");
 
     Ok(if diagnostics.is_empty() { 0 } else { 1 })
+}
+
+fn apply_roots_overrides(config: &mut Config, kotlin_roots: &[String], ios_roots: &[String]) {
+    if !kotlin_roots.is_empty() {
+        config.kotlin_roots = kotlin_roots.to_vec();
+    }
+    if !ios_roots.is_empty() {
+        config.ios_roots = ios_roots.to_vec();
+    }
 }
 
 fn downgrade_unverified_type_usage(diagnostics: &mut [Diagnostic]) {

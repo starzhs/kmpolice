@@ -96,6 +96,10 @@ pub struct GitArgs {
     pub base_ref: String,
     #[arg(long)]
     pub head_ref: String,
+    #[arg(long = "kotlin-root")]
+    pub kotlin_roots: Vec<String>,
+    #[arg(long = "ios-root")]
+    pub ios_roots: Vec<String>,
     #[arg(long)]
     pub introduced_only: bool,
 }
@@ -106,4 +110,8 @@ pub struct MrArgs {
     pub repo: PathBuf,
     #[arg(long, default_value = "develop")]
     pub target: String,
+    #[arg(long = "kotlin-root")]
+    pub kotlin_roots: Vec<String>,
+    #[arg(long = "ios-root")]
+    pub ios_roots: Vec<String>,
 }

@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use walkdir::WalkDir;
@@ -166,6 +167,7 @@ fn collect_git_files(
     roots: &[String],
 ) -> Result<Vec<SourceFile>> {
     let mut files = Vec::new();
+    let mut candidates = Vec::new();
 
     for path in paths {
         if is_ignored_generated_path(path) {
@@ -188,12 +190,46 @@ fn collect_git_files(
             continue;
         }
 
+        candidates.push(path);
+    }
+
+    eprintln!(
+        "[kmpolice] snapshot={} ext=.{} candidates={}",
+        git_ref,
+        extension,
+        candidates.len()
+    );
+
+    let started_at = Instant::now();
+    for (index, path) in candidates.iter().enumerate() {
+        if index > 0 && index % 200 == 0 {
+            eprintln!(
+                "[kmpolice] snapshot={} ext=.{} loaded {}/{} files (elapsed: {:.1}s)...",
+                git_ref,
+                extension,
+                index,
+                candidates.len(),
+                started_at.elapsed().as_secs_f64()
+            );
+        }
+
         let contents = git_show(repo, git_ref, path)?;
         files.push(SourceFile {
-            path: path.clone(),
+            path: (*path).clone(),
             contents,
             snapshot: Some(git_ref.to_string()),
         });
+    }
+
+    if !candidates.is_empty() {
+        eprintln!(
+            "[kmpolice] snapshot={} ext=.{} loaded {}/{} files (elapsed: {:.1}s).",
+            git_ref,
+            extension,
+            candidates.len(),
+            candidates.len(),
+            started_at.elapsed().as_secs_f64()
+        );
     }
 
     Ok(files)
