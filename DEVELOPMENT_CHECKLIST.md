@@ -27,7 +27,15 @@
 - [x] Проверка добавления одноимённого Swift-символа в diff как сигнал возможной замены типа
 - [x] Интеграционные unit-тесты по новым диагностическим сценариям
 
+## Git robustness improvements
+- [x] (2) Shallow-clone awareness (`--is-shallow-repository`) + actionable hint for `merge-base`
+- [x] (7) Noise guard for line-ending/filemode-like changes via meaningful code diff check (`*.kt`, `*.swift`)
+- [x] (8) Pragmatic filtering of obvious generated/build garbage in repo scan
+- [x] (10) Detached HEAD handling (explicit log, continue with refs)
+- [x] (11) Unmerged/conflict guard (stop early with clear error)
+
 ## Отложено (Roadmap)
+- [ ] Остальные git edge-cases из расширенного списка (вне 0.1.1 scope)
 - [ ] Full-scan uncertainty model без diff (глубокая оценка происхождения символов)
 - [ ] Полноценный module/type resolution через Swift toolchain (SourceKit/indexstore)
 - [ ] Сложные alias/import transitive-resolution сценарии

@@ -70,6 +70,52 @@ pub fn is_worktree_dirty(repo: &Path) -> Result<bool> {
     Ok(!output.trim().is_empty())
 }
 
+pub fn has_unmerged_paths(repo: &Path) -> Result<bool> {
+    let output = git_command(repo, ["ls-files", "-u"])?;
+    Ok(!output.trim().is_empty())
+}
+
+pub fn is_head_detached(repo: &Path) -> Result<bool> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .status()
+        .with_context(|| format!("failed to run git in {}", repo.display()))?;
+    Ok(!status.success())
+}
+
+pub fn has_meaningful_code_diff(repo: &Path, base_ref: &str, head_ref: &str) -> Result<bool> {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "diff",
+            "--quiet",
+            "--ignore-cr-at-eol",
+            "--ignore-space-at-eol",
+            base_ref,
+            head_ref,
+            "--",
+            "*.kt",
+            "*.swift",
+        ])
+        .status()
+        .with_context(|| format!("failed to run git in {}", repo.display()))?;
+
+    match status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        Some(code) => Err(anyhow!("git diff failed with exit code {code}")),
+        None => Err(anyhow!("git diff failed: process terminated by signal")),
+    }
+}
+
+pub fn is_shallow_repository(repo: &Path) -> Result<bool> {
+    let output = git_command(repo, ["rev-parse", "--is-shallow-repository"])?;
+    Ok(output.trim() == "true")
+}
+
 fn collect_path_files(
     root: &Path,
     extension: &str,
@@ -122,6 +168,10 @@ fn collect_git_files(
     let mut files = Vec::new();
 
     for path in paths {
+        if is_ignored_generated_path(path) {
+            continue;
+        }
+
         if Path::new(path).extension() != Some(OsStr::new(extension)) {
             continue;
         }
@@ -159,6 +209,10 @@ fn collect_worktree_git_list_files(
     let mut collected = Vec::new();
 
     for path in files {
+        if is_ignored_generated_path(path) {
+            continue;
+        }
+
         if Path::new(path).extension() != Some(OsStr::new(extension)) {
             continue;
         }
@@ -213,6 +267,23 @@ fn git_ls_files_worktree(repo: &Path) -> Result<Vec<String>> {
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
         .collect())
+}
+
+fn is_ignored_generated_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let generated_markers = [
+        "/build/",
+        "/.build/",
+        "/DerivedData/",
+        "/Pods/",
+        "/.gradle/",
+        "/.swiftpm/",
+        "/Generated/",
+        "/generated/",
+    ];
+    generated_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
 }
 
 fn git_ls_tree(repo: &Path, git_ref: &str) -> Result<Vec<String>> {

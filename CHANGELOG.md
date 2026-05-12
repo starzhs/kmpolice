@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Summary
+- Git robustness pass for `git`/`mr` modes (single improvement batch).
+
+### Changes
+- Added unmerged state guard (`git ls-files -u`) with early explicit failure.
+- Added detached HEAD awareness log.
+- Added shallow repository awareness with merge-base remediation hint.
+- Added meaningful code-diff guard to ignore non-code/noise-only diffs (`*.kt`, `*.swift`, EOL-aware).
+- Added pragmatic filtering for obvious generated/build directories while collecting source files.
+
 ## 0.1.1
 
 ### Summary

@@ -33,7 +33,9 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub enum CheckCommand {
     Check(CheckGroup),
-    #[command(about = "Best-effort direct path check without git diff context (use at your own risk)")]
+    #[command(
+        about = "Best-effort direct path check without git diff context (use at your own risk)"
+    )]
     Paths(PathsArgs),
     Git(GitArgs),
     Mr(MrArgs),
@@ -47,7 +49,9 @@ pub struct CheckGroup {
 
 #[derive(Debug, Subcommand)]
 pub enum NestedCheckCommand {
-    #[command(about = "Best-effort direct path check without git diff context (use at your own risk)")]
+    #[command(
+        about = "Best-effort direct path check without git diff context (use at your own risk)"
+    )]
     Paths(PathsArgs),
     Git(GitArgs),
     Mr(MrArgs),

@@ -110,7 +110,9 @@ fn compare_analysis(
         &snapshot.ios_files,
         config,
     ));
-    diagnostics.extend(compare_additional_kotlin_api_usages(analysis, snapshot, config));
+    diagnostics.extend(compare_additional_kotlin_api_usages(
+        analysis, snapshot, config,
+    ));
 
     diagnostics
         .into_iter()
@@ -153,7 +155,9 @@ fn compare_additional_kotlin_api_usages(
     diagnostics.extend(check_constructor_calls(snapshot, &index, config));
     diagnostics.extend(check_property_usages(snapshot, &index, config));
     diagnostics.extend(check_enum_and_sealed_switches(snapshot, &index, config));
-    diagnostics.extend(check_typealias_and_nested_type_usages(snapshot, &index, config));
+    diagnostics.extend(check_typealias_and_nested_type_usages(
+        snapshot, &index, config,
+    ));
     diagnostics.extend(check_top_level_usages(snapshot, &index, config));
     diagnostics.extend(check_companion_member_usages(snapshot, &index, config));
 
@@ -225,8 +229,10 @@ fn compare_class_method_invocations(
                     _ => None,
                 })
                 .collect();
-            let expected_counts: Vec<usize> =
-                method_signatures.iter().map(|method| method.parameters.len()).collect();
+            let expected_counts: Vec<usize> = method_signatures
+                .iter()
+                .map(|method| method.parameters.len())
+                .collect();
 
             if expected_counts
                 .iter()
@@ -238,13 +244,14 @@ fn compare_class_method_invocations(
                     .filter(|method| method.parameters.len() == swift_argument_count)
                     .collect();
 
-                let has_name_match = same_arity.iter().any(|method| {
-                    method
-                        .parameters
-                        .iter()
-                        .zip(swift_labels.iter())
-                        .all(|(parameter, label)| label.as_deref() == Some(parameter.display_name.as_str()))
-                });
+                let has_name_match =
+                    same_arity.iter().any(|method| {
+                        method.parameters.iter().zip(swift_labels.iter()).all(
+                            |(parameter, label)| {
+                                label.as_deref() == Some(parameter.display_name.as_str())
+                            },
+                        )
+                    });
                 if has_name_match {
                     continue;
                 }
@@ -390,10 +397,9 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
     .expect("declared type regex");
     let top_level_member_regex =
         Regex::new(r"(?m)^\s*(?:public\s+)?(?:fun|val)\s+([A-Za-z_]\w*)").expect("top-level regex");
-    let companion_block_regex = Regex::new(
-        r"(?s)class\s+([A-Za-z_]\w*)[^{]*\{.*?companion\s+object[^{]*\{(.*?)\}",
-    )
-    .expect("companion regex");
+    let companion_block_regex =
+        Regex::new(r"(?s)class\s+([A-Za-z_]\w*)[^{]*\{.*?companion\s+object[^{]*\{(.*?)\}")
+            .expect("companion regex");
     let companion_member_regex =
         Regex::new(r"(?m)^\s*(?:public\s+)?(?:fun|const\s+val|val|var)\s+([A-Za-z_]\w*)")
             .expect("companion member regex");
@@ -555,21 +561,28 @@ fn kotlin_file_stem_to_type_name(path: &str) -> String {
     let stem = file_name.strip_suffix(".kt").unwrap_or(file_name);
     let mut chars = stem.chars();
     match chars.next() {
-        Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.collect::<String>()),
+        Some(first) => format!(
+            "{}{}",
+            first.to_ascii_uppercase(),
+            chars.collect::<String>()
+        ),
         None => stem.to_string(),
     }
 }
 
 fn to_swift_case_name(raw: &str) -> String {
-    if raw
-        .chars()
-        .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_')
-    {
+    if raw.chars().all(|character| {
+        character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+    }) {
         return raw.to_ascii_lowercase().replace('_', "");
     }
     let mut chars = raw.chars();
     match chars.next() {
-        Some(first) => format!("{}{}", first.to_ascii_lowercase(), chars.collect::<String>()),
+        Some(first) => format!(
+            "{}{}",
+            first.to_ascii_lowercase(),
+            chars.collect::<String>()
+        ),
         None => raw.to_string(),
     }
 }
@@ -657,11 +670,12 @@ fn check_property_usages(
         .expect("declaration regex");
     let property_access_regex =
         Regex::new(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b").expect("property access regex");
-    let assignment_regex = Regex::new(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+)")
-        .expect("assignment regex");
-    let typed_read_regex =
-        Regex::new(r"\b(?:let|var)\s+\w+\s*:\s*([A-Za-z_][\w<>?]*)\s*=\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
-            .expect("typed read regex");
+    let assignment_regex =
+        Regex::new(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.+)").expect("assignment regex");
+    let typed_read_regex = Regex::new(
+        r"\b(?:let|var)\s+\w+\s*:\s*([A-Za-z_][\w<>?]*)\s*=\s*([A-Za-z_]\w*)\.([A-Za-z_]\w*)",
+    )
+    .expect("typed read regex");
 
     for file in &snapshot.ios_files {
         let variable_types = collect_typed_variables(&file.contents, &declaration_regex);
@@ -692,7 +706,10 @@ fn check_property_usages(
                     "Swift access `{}.{}` refers to a missing Kotlin property",
                     receiver, property
                 ),
-                hint: format!("expected one of: {}", properties.keys().cloned().collect::<Vec<_>>().join(", ")),
+                hint: format!(
+                    "expected one of: {}",
+                    properties.keys().cloned().collect::<Vec<_>>().join(", ")
+                ),
                 kotlin_symbol: Some(class_name.clone()),
                 ios_symbol: None,
                 member: Some(property),
@@ -825,12 +842,12 @@ fn check_enum_and_sealed_switches(
         .expect("declaration regex");
     let switch_on_enum_regex =
         Regex::new(r"(?s)switch\s+onEnum\s*\(\s*of:\s*([A-Za-z_]\w*)\s*\)\s*\{(.*?)\}")
-        .expect("switch regex");
+            .expect("switch regex");
     let switch_plain_regex =
         Regex::new(r"(?s)switch\s+([A-Za-z_]\w*)\s*\{(.*?)\}").expect("plain switch regex");
     let case_regex = Regex::new(r"(?m)case\s+\.([A-Za-z_]\w*)").expect("case regex");
-    let if_is_regex = Regex::new(r"\bif\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)")
-        .expect("if-is regex");
+    let if_is_regex =
+        Regex::new(r"\bif\s+([A-Za-z_]\w*)\s+is\s+([A-Za-z_]\w*)").expect("if-is regex");
 
     for file in &snapshot.ios_files {
         let variable_types = collect_typed_variables(&file.contents, &declaration_regex);
@@ -985,8 +1002,8 @@ fn check_typealias_and_nested_type_usages(
     config: &Config,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let typed_decl_regex = Regex::new(r"\b(?:let|var)\s+\w+\s*:\s*([A-Z][A-Za-z_0-9]*)")
-        .expect("typed decl regex");
+    let typed_decl_regex =
+        Regex::new(r"\b(?:let|var)\s+\w+\s*:\s*([A-Z][A-Za-z_0-9]*)").expect("typed decl regex");
     let swift_type_decl_regex =
         Regex::new(r"(?m)^\s*(?:struct|class|protocol|enum)\s+[A-Za-z_]\w*(?:\s*<([^>]+)>)?")
             .expect("swift decl regex");
@@ -1078,7 +1095,10 @@ fn check_top_level_usages(
             diagnostics.push(Diagnostic {
                 code: "top_level_member_missing".to_string(),
                 severity: config.severity_for("top_level_member_missing"),
-                message: format!("Swift uses missing top-level Kotlin member `{}.{}`", container, member),
+                message: format!(
+                    "Swift uses missing top-level Kotlin member `{}.{}`",
+                    container, member
+                ),
                 hint: format!(
                     "expected one of: {}",
                     known_members.iter().cloned().collect::<Vec<_>>().join(", ")
@@ -1106,9 +1126,8 @@ fn check_companion_member_usages(
     config: &Config,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let companion_usage_regex =
-        Regex::new(r"\b([A-Z][A-Za-z_0-9]*)\.companion\.([A-Za-z_]\w*)")
-            .expect("companion usage regex");
+    let companion_usage_regex = Regex::new(r"\b([A-Z][A-Za-z_0-9]*)\.companion\.([A-Za-z_]\w*)")
+        .expect("companion usage regex");
 
     for file in &snapshot.ios_files {
         for captures in companion_usage_regex.captures_iter(&file.contents) {
@@ -1521,8 +1540,7 @@ fn compare_methods(
                 ),
                 format!(
                     "expected name `{}`; actual name `{}`",
-                    kotlin_parameter.display_name,
-                    swift_parameter.display_name
+                    kotlin_parameter.display_name, swift_parameter.display_name
                 ),
             ));
         }
@@ -1547,8 +1565,7 @@ fn compare_methods(
                 ),
                 format!(
                     "expected type `{}`; actual type `{}`",
-                    kotlin_parameter.parameter_type,
-                    swift_parameter.parameter_type
+                    kotlin_parameter.parameter_type, swift_parameter.parameter_type
                 ),
             ));
         }
@@ -1972,7 +1989,11 @@ mod tests {
         .expect("config should parse");
 
         let diagnostics = compare_project(&snapshot, &config).expect("analysis should succeed");
-        assert!(diagnostics.iter().any(|diagnostic| diagnostic.code == "missing_protocol"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "missing_protocol")
+        );
     }
 
     #[test]
@@ -2007,9 +2028,11 @@ mod tests {
 
         let diagnostics =
             compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "class_method_parameter_count_mismatch"));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "class_method_parameter_count_mismatch")
+        );
     }
 
     #[test]
@@ -2045,9 +2068,11 @@ mod tests {
 
         let diagnostics =
             compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(!diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "class_method_parameter_count_mismatch"));
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "class_method_parameter_count_mismatch")
+        );
     }
 
     #[test]
@@ -2086,12 +2111,16 @@ mod tests {
             .iter()
             .find(|diagnostic| diagnostic.code == "class_method_parameter_name_mismatch")
             .expect("name mismatch diagnostic expected");
-        assert!(diagnostic
-            .hint
-            .contains("expected labels: fruittie, name; actual labels: !item!, !title!"));
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "class_method_parameter_name_mismatch"));
+        assert!(
+            diagnostic
+                .hint
+                .contains("expected labels: fruittie, name; actual labels: !item!, !title!")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "class_method_parameter_name_mismatch")
+        );
     }
 
     #[test]
@@ -2119,8 +2148,13 @@ mod tests {
             }],
         };
 
-        let diagnostics = compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics.iter().any(|d| d.code == "class_constructor_parameter_count_mismatch"));
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "class_constructor_parameter_count_mismatch")
+        );
     }
 
     #[test]
@@ -2156,15 +2190,28 @@ mod tests {
             }],
         };
 
-        let diagnostics = compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics.iter().any(|d| d.code == "class_property_missing"));
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.code == "class_property_mutability_mismatch"));
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.code == "class_property_nullability_mismatch"));
-        assert!(diagnostics.iter().any(|d| d.code == "class_property_type_mismatch"));
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "class_property_missing")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "class_property_mutability_mismatch")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "class_property_nullability_mismatch")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "class_property_type_mismatch")
+        );
     }
 
     #[test]
@@ -2198,10 +2245,13 @@ mod tests {
             }],
         };
 
-        let diagnostics = compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.code == "enum_or_sealed_switch_missing_cases"));
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "enum_or_sealed_switch_missing_cases")
+        );
     }
 
     #[test]
@@ -2237,10 +2287,13 @@ mod tests {
             }],
         };
 
-        let diagnostics = compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.code == "enum_or_sealed_switch_missing_cases"));
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "enum_or_sealed_switch_missing_cases")
+        );
     }
 
     #[test]
@@ -2278,10 +2331,13 @@ mod tests {
             }],
         };
 
-        let diagnostics = compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.code == "enum_or_sealed_switch_missing_cases"));
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "enum_or_sealed_switch_missing_cases")
+        );
     }
 
     #[test]
@@ -2309,8 +2365,13 @@ mod tests {
             }],
         };
 
-        let diagnostics = compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics.iter().any(|d| d.code == "kotlin_type_usage_missing"));
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "kotlin_type_usage_missing")
+        );
     }
 
     #[test]
@@ -2344,8 +2405,17 @@ mod tests {
             }],
         };
 
-        let diagnostics = compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
-        assert!(diagnostics.iter().any(|d| d.code == "top_level_member_missing"));
-        assert!(diagnostics.iter().any(|d| d.code == "companion_member_missing"));
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "top_level_member_missing")
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "companion_member_missing")
+        );
     }
 }

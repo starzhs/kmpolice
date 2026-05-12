@@ -16,7 +16,10 @@ use cli::{CheckCommand, Cli, OutputFormat};
 use config::{Config, Severity};
 use model::{Diagnostic, ProjectSnapshot};
 use report::{render_json, render_text};
-use source::{is_worktree_dirty, load_from_git, load_from_paths, load_from_worktree, merge_base, resolve_ref};
+use source::{
+    has_meaningful_code_diff, has_unmerged_paths, is_head_detached, is_shallow_repository,
+    is_worktree_dirty, load_from_git, load_from_paths, load_from_worktree, merge_base, resolve_ref,
+};
 
 pub fn run() -> Result<i32> {
     let cli = Cli::parse().normalized_command();
@@ -40,6 +43,19 @@ pub fn run() -> Result<i32> {
             diagnostics
         }
         CheckCommand::Git(args) => {
+            if has_unmerged_paths(&args.repo)? {
+                return Err(anyhow::anyhow!(
+                    "repository has unresolved merge conflicts (unmerged paths). Resolve conflicts before running kmpolice."
+                ));
+            }
+            if is_head_detached(&args.repo)? {
+                eprintln!("[kmpolice] mode=git: HEAD is detached; continuing with explicit refs.");
+            }
+            if is_shallow_repository(&args.repo)? {
+                eprintln!(
+                    "[kmpolice] mode=git: shallow repository detected; if refs are missing, fetch additional history."
+                );
+            }
             eprintln!(
                 "[kmpolice] mode=git: resolving refs base={} head={}...",
                 args.base_ref, args.head_ref
@@ -53,67 +69,99 @@ pub fn run() -> Result<i32> {
                     base_sha
                 );
                 Vec::new()
+            } else if !worktree_dirty
+                && !has_meaningful_code_diff(&args.repo, &args.base_ref, &args.head_ref)?
+            {
+                eprintln!(
+                    "[kmpolice] mode=git: only non-meaningful changes (eol/filemode/whitespace-at-eol), fast exit."
+                );
+                Vec::new()
             } else {
-            eprintln!("[kmpolice] mode=git: loading base snapshot...");
-            let base_snapshot = load_from_git(&args.repo, &args.base_ref, &config)?;
-            eprintln!(
-                "[kmpolice] mode=git: base kotlin_files={} ios_files={}",
-                base_snapshot.kotlin_files.len(),
-                base_snapshot.ios_files.len()
-            );
-            eprintln!("[kmpolice] mode=git: loading head snapshot...");
-            let head_snapshot = if base_sha == head_sha && worktree_dirty {
-                eprintln!("[kmpolice] mode=git: refs are identical but worktree is dirty, using WORKTREE as head snapshot.");
-                load_from_worktree(&args.repo, &config)?
-            } else {
-                load_from_git(&args.repo, &args.head_ref, &config)?
-            };
-            eprintln!(
-                "[kmpolice] mode=git: head kotlin_files={} ios_files={} -> analyzing...",
-                head_snapshot.kotlin_files.len(),
-                head_snapshot.ios_files.len()
-            );
-
-            let base_diagnostics = compare_project(&base_snapshot, &config)?;
-            let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
-            apply_diff_aware_type_usage_severity(
-                &base_snapshot,
-                &head_snapshot,
-                &mut head_diagnostics,
-            );
-
-            for diagnostic in &mut head_diagnostics {
-                diagnostic.base_ref = Some(args.base_ref.clone());
-                diagnostic.head_ref = Some(if base_sha == head_sha && worktree_dirty {
-                    "WORKTREE".to_string()
+                eprintln!("[kmpolice] mode=git: loading base snapshot...");
+                let base_snapshot = load_from_git(&args.repo, &args.base_ref, &config)?;
+                eprintln!(
+                    "[kmpolice] mode=git: base kotlin_files={} ios_files={}",
+                    base_snapshot.kotlin_files.len(),
+                    base_snapshot.ios_files.len()
+                );
+                eprintln!("[kmpolice] mode=git: loading head snapshot...");
+                let head_snapshot = if base_sha == head_sha && worktree_dirty {
+                    eprintln!(
+                        "[kmpolice] mode=git: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
+                    );
+                    load_from_worktree(&args.repo, &config)?
                 } else {
-                    args.head_ref.clone()
-                });
-            }
+                    load_from_git(&args.repo, &args.head_ref, &config)?
+                };
+                eprintln!(
+                    "[kmpolice] mode=git: head kotlin_files={} ios_files={} -> analyzing...",
+                    head_snapshot.kotlin_files.len(),
+                    head_snapshot.ios_files.len()
+                );
 
-            if args.introduced_only {
-                let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);
-                eprintln!(
-                    "[kmpolice] mode=git: completed introduced_only diagnostics={}",
-                    introduced.len()
+                let base_diagnostics = compare_project(&base_snapshot, &config)?;
+                let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
+                apply_diff_aware_type_usage_severity(
+                    &base_snapshot,
+                    &head_snapshot,
+                    &mut head_diagnostics,
                 );
-                introduced
-            } else {
-                eprintln!(
-                    "[kmpolice] mode=git: completed diagnostics={}",
-                    head_diagnostics.len()
-                );
-                head_diagnostics
-            }
+
+                for diagnostic in &mut head_diagnostics {
+                    diagnostic.base_ref = Some(args.base_ref.clone());
+                    diagnostic.head_ref = Some(if base_sha == head_sha && worktree_dirty {
+                        "WORKTREE".to_string()
+                    } else {
+                        args.head_ref.clone()
+                    });
+                }
+
+                if args.introduced_only {
+                    let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);
+                    eprintln!(
+                        "[kmpolice] mode=git: completed introduced_only diagnostics={}",
+                        introduced.len()
+                    );
+                    introduced
+                } else {
+                    eprintln!(
+                        "[kmpolice] mode=git: completed diagnostics={}",
+                        head_diagnostics.len()
+                    );
+                    head_diagnostics
+                }
             }
         }
         CheckCommand::Mr(args) => {
+            if has_unmerged_paths(&args.repo)? {
+                return Err(anyhow::anyhow!(
+                    "repository has unresolved merge conflicts (unmerged paths). Resolve conflicts before running kmpolice."
+                ));
+            }
+            if is_head_detached(&args.repo)? {
+                eprintln!("[kmpolice] mode=mr: HEAD is detached; continuing with explicit refs.");
+            }
+            let shallow_repo = is_shallow_repository(&args.repo)?;
+            if shallow_repo {
+                eprintln!(
+                    "[kmpolice] mode=mr: shallow repository detected; merge-base can be incomplete."
+                );
+            }
             eprintln!(
                 "[kmpolice] mode=mr: resolving merge-base target={} head=HEAD...",
                 args.target
             );
             let head_ref = "HEAD".to_string();
-            let base_ref = merge_base(&args.repo, &args.target, &head_ref)?;
+            let base_ref = merge_base(&args.repo, &args.target, &head_ref).map_err(|err| {
+                if shallow_repo {
+                    anyhow::anyhow!(
+                        "{}; shallow history may hide merge-base. Try `git fetch --unshallow` or fetch the target branch depth.",
+                        err
+                    )
+                } else {
+                    err
+                }
+            })?;
             let base_sha = resolve_ref(&args.repo, &base_ref)?;
             let head_sha = resolve_ref(&args.repo, &head_ref)?;
             let worktree_dirty = is_worktree_dirty(&args.repo)?;
@@ -123,51 +171,60 @@ pub fn run() -> Result<i32> {
                     base_sha
                 );
                 Vec::new()
+            } else if !worktree_dirty
+                && !has_meaningful_code_diff(&args.repo, &base_ref, &head_ref)?
+            {
+                eprintln!(
+                    "[kmpolice] mode=mr: only non-meaningful changes (eol/filemode/whitespace-at-eol), fast exit."
+                );
+                Vec::new()
             } else {
-            eprintln!("[kmpolice] mode=mr: loading base snapshot...");
+                eprintln!("[kmpolice] mode=mr: loading base snapshot...");
 
-            let base_snapshot = load_from_git(&args.repo, &base_ref, &config)?;
-            eprintln!(
-                "[kmpolice] mode=mr: base kotlin_files={} ios_files={}",
-                base_snapshot.kotlin_files.len(),
-                base_snapshot.ios_files.len()
-            );
-            eprintln!("[kmpolice] mode=mr: loading head snapshot...");
-            let head_snapshot = if base_sha == head_sha && worktree_dirty {
-                eprintln!("[kmpolice] mode=mr: refs are identical but worktree is dirty, using WORKTREE as head snapshot.");
-                load_from_worktree(&args.repo, &config)?
-            } else {
-                load_from_git(&args.repo, &head_ref, &config)?
-            };
-            eprintln!(
-                "[kmpolice] mode=mr: head kotlin_files={} ios_files={} -> analyzing...",
-                head_snapshot.kotlin_files.len(),
-                head_snapshot.ios_files.len()
-            );
-
-            let base_diagnostics = compare_project(&base_snapshot, &config)?;
-            let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
-            apply_diff_aware_type_usage_severity(
-                &base_snapshot,
-                &head_snapshot,
-                &mut head_diagnostics,
-            );
-
-            for diagnostic in &mut head_diagnostics {
-                diagnostic.base_ref = Some(base_ref.clone());
-                diagnostic.head_ref = Some(if base_sha == head_sha && worktree_dirty {
-                    "WORKTREE".to_string()
+                let base_snapshot = load_from_git(&args.repo, &base_ref, &config)?;
+                eprintln!(
+                    "[kmpolice] mode=mr: base kotlin_files={} ios_files={}",
+                    base_snapshot.kotlin_files.len(),
+                    base_snapshot.ios_files.len()
+                );
+                eprintln!("[kmpolice] mode=mr: loading head snapshot...");
+                let head_snapshot = if base_sha == head_sha && worktree_dirty {
+                    eprintln!(
+                        "[kmpolice] mode=mr: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
+                    );
+                    load_from_worktree(&args.repo, &config)?
                 } else {
-                    head_ref.clone()
-                });
-            }
+                    load_from_git(&args.repo, &head_ref, &config)?
+                };
+                eprintln!(
+                    "[kmpolice] mode=mr: head kotlin_files={} ios_files={} -> analyzing...",
+                    head_snapshot.kotlin_files.len(),
+                    head_snapshot.ios_files.len()
+                );
 
-            let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);
-            eprintln!(
-                "[kmpolice] mode=mr: completed introduced diagnostics={}",
-                introduced.len()
-            );
-            introduced
+                let base_diagnostics = compare_project(&base_snapshot, &config)?;
+                let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
+                apply_diff_aware_type_usage_severity(
+                    &base_snapshot,
+                    &head_snapshot,
+                    &mut head_diagnostics,
+                );
+
+                for diagnostic in &mut head_diagnostics {
+                    diagnostic.base_ref = Some(base_ref.clone());
+                    diagnostic.head_ref = Some(if base_sha == head_sha && worktree_dirty {
+                        "WORKTREE".to_string()
+                    } else {
+                        head_ref.clone()
+                    });
+                }
+
+                let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);
+                eprintln!(
+                    "[kmpolice] mode=mr: completed introduced diagnostics={}",
+                    introduced.len()
+                );
+                introduced
             }
         }
         CheckCommand::Check(_) => unreachable!("cli command should be normalized before execution"),
@@ -187,9 +244,7 @@ fn downgrade_unverified_type_usage(diagnostics: &mut [Diagnostic]) {
     for diagnostic in diagnostics.iter_mut() {
         if diagnostic.code == "kotlin_type_usage_missing" {
             diagnostic.severity = Severity::Warning;
-            diagnostic
-                .evidence
-                .push("mode:paths_no_diff".to_string());
+            diagnostic.evidence.push("mode:paths_no_diff".to_string());
             diagnostic
                 .evidence
                 .push("origin_unresolved_without_diff".to_string());
@@ -239,20 +294,19 @@ fn apply_diff_aware_type_usage_severity(
                 .evidence
                 .push("dependency_manifests_unchanged".to_string());
         }
-        diagnostic.severity = if removed_in_diff
-            && !replacement_added_in_swift_diff
-            && !dependency_manifests_changed
-        {
-            diagnostic
-                .evidence
-                .push("high_confidence_breakage_signal".to_string());
-            Severity::Error
-        } else {
-            diagnostic
-                .evidence
-                .push("softened_due_to_ambiguity".to_string());
-            Severity::Warning
-        };
+        diagnostic.severity =
+            if removed_in_diff && !replacement_added_in_swift_diff && !dependency_manifests_changed
+            {
+                diagnostic
+                    .evidence
+                    .push("high_confidence_breakage_signal".to_string());
+                Severity::Error
+            } else {
+                diagnostic
+                    .evidence
+                    .push("softened_due_to_ambiguity".to_string());
+                Severity::Warning
+            };
     }
 }
 
@@ -270,9 +324,8 @@ fn collect_added_swift_declared_symbols(
 
 fn collect_swift_declared_symbols(snapshot: &ProjectSnapshot) -> HashSet<String> {
     let mut symbols = HashSet::new();
-    let swift_decl_regex =
-        Regex::new(r"(?m)^\s*(?:struct|class|protocol|enum)\s+([A-Za-z_]\w*)")
-            .expect("swift decl regex should compile");
+    let swift_decl_regex = Regex::new(r"(?m)^\s*(?:struct|class|protocol|enum)\s+([A-Za-z_]\w*)")
+        .expect("swift decl regex should compile");
     for file in &snapshot.ios_files {
         for captures in swift_decl_regex.captures_iter(&file.contents) {
             symbols.insert(captures[1].to_string());
@@ -287,9 +340,8 @@ fn collect_kotlin_declared_symbols(snapshot: &ProjectSnapshot) -> HashSet<String
         r"(?m)^\s*(?:public\s+)?(?:data\s+class|class|interface|object|enum\s+class|sealed\s+class)\s+([A-Za-z_]\w*)",
     )
     .expect("type decl regex should compile");
-    let typealias_regex =
-        Regex::new(r"(?m)^\s*(?:public\s+)?typealias\s+([A-Za-z_]\w*)\s*=")
-            .expect("typealias regex should compile");
+    let typealias_regex = Regex::new(r"(?m)^\s*(?:public\s+)?typealias\s+([A-Za-z_]\w*)\s*=")
+        .expect("typealias regex should compile");
 
     for file in &snapshot.kotlin_files {
         for captures in type_decl_regex.captures_iter(&file.contents) {
@@ -317,7 +369,11 @@ fn dependency_manifests_changed(
         "Package.resolved",
         "gradle/libs.versions.toml",
     ];
-    let manifest_file = |path: &str| manifest_suffixes.iter().any(|suffix| path.ends_with(suffix));
+    let manifest_file = |path: &str| {
+        manifest_suffixes
+            .iter()
+            .any(|suffix| path.ends_with(suffix))
+    };
 
     let base_manifest_contents: HashSet<(String, String)> = base_snapshot
         .ios_files
