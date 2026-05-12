@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.1.3
+## 0.1.4
 
 ### Summary
 - Git robustness pass for `git`/`mr` modes (single improvement batch).
 - Added runtime roots via CLI and elapsed-time progress for snapshot loading.
+- Refined diff-scope strategy: Kotlin is changed-path scoped, iOS is full-scan in configured roots.
 
 ### Changes
 - Added unmerged state guard (`git ls-files -u`) with early explicit failure.
@@ -14,6 +15,8 @@
 - Added pragmatic filtering for obvious generated/build directories while collecting source files.
 - Added `--kotlin-root` / `--ios-root` for `git` and `mr` commands.
 - Added elapsed time to snapshot loading progress logs.
+- `mr/git` now include dirty worktree changes in changed-path scope.
+- `mr/git` now scan Swift files in full iOS scope to avoid missing breakages outside changed files.
 
 ## 0.1.1
 
