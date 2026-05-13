@@ -127,7 +127,6 @@ pub fn run() -> Result<i32> {
                     head_snapshot.ios_files.len()
                 );
 
-                let base_diagnostics = compare_project(&base_snapshot, &config)?;
                 let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
                 apply_diff_aware_type_usage_severity(
                     &base_snapshot,
@@ -273,12 +272,11 @@ pub fn run() -> Result<i32> {
                     });
                 }
 
-                let introduced = introduced_diagnostics(base_diagnostics, head_diagnostics);
                 eprintln!(
-                    "[kmpolice] mode=mr: completed introduced diagnostics={}",
-                    introduced.len()
+                    "[kmpolice] mode=mr: completed diagnostics={}",
+                    head_diagnostics.len()
                 );
-                introduced
+                head_diagnostics
             }
         }
         CheckCommand::Check(_) => unreachable!("cli command should be normalized before execution"),
