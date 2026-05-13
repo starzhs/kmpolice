@@ -127,6 +127,7 @@ pub fn run() -> Result<i32> {
                     head_snapshot.ios_files.len()
                 );
 
+                let base_diagnostics = compare_project(&base_snapshot, &config)?;
                 let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
                 apply_diff_aware_type_usage_severity(
                     &base_snapshot,
@@ -255,7 +256,6 @@ pub fn run() -> Result<i32> {
                     head_snapshot.ios_files.len()
                 );
 
-                let base_diagnostics = compare_project(&base_snapshot, &config)?;
                 let mut head_diagnostics = compare_project(&head_snapshot, &config)?;
                 apply_diff_aware_type_usage_severity(
                     &base_snapshot,
