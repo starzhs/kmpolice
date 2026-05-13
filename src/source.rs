@@ -203,6 +203,10 @@ fn collect_path_files(
     extension: &str,
     matcher: &PathMatcher,
 ) -> Result<Vec<SourceFile>> {
+    if let Some(files) = collect_path_files_from_git(root, extension, matcher)? {
+        return Ok(files);
+    }
+
     let mut files = Vec::new();
 
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
@@ -237,6 +241,79 @@ fn collect_path_files(
     }
 
     Ok(files)
+}
+
+fn collect_path_files_from_git(
+    root: &Path,
+    extension: &str,
+    matcher: &PathMatcher,
+) -> Result<Option<Vec<SourceFile>>> {
+    let repo_root = match git_toplevel_for_path(root)? {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+    let root_rel = root
+        .strip_prefix(&repo_root)
+        .ok()
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+    let files = git_ls_files_worktree(&repo_root)?;
+
+    let mut collected = Vec::new();
+    for path in files {
+        let normalized = normalize_git_path(&path);
+        if !root_rel.is_empty() && !normalized.starts_with(root_rel.trim_end_matches('/')) {
+            continue;
+        }
+        if is_ignored_generated_path(&normalized) {
+            continue;
+        }
+        if Path::new(&normalized).extension() != Some(OsStr::new(extension)) {
+            continue;
+        }
+        let relative_for_matcher = if root_rel.is_empty() {
+            normalized.clone()
+        } else {
+            normalized
+                .strip_prefix(&(root_rel.clone() + "/"))
+                .unwrap_or(&normalized)
+                .to_string()
+        };
+        if !matcher.is_included(&relative_for_matcher) {
+            continue;
+        }
+
+        let absolute_path = repo_root.join(&normalized);
+        let contents = fs::read_to_string(&absolute_path)
+            .with_context(|| format!("failed to read source file {}", absolute_path.display()))?;
+        collected.push(SourceFile {
+            path: absolute_path.display().to_string(),
+            contents,
+            snapshot: None,
+        });
+    }
+
+    Ok(Some(collected))
+}
+
+fn git_toplevel_for_path(path: &Path) -> Result<Option<PathBuf>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output();
+    let Ok(output) = output else {
+        return Ok(None);
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let stdout = String::from_utf8(output.stdout).context("git output was not valid UTF-8")?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PathBuf::from(trimmed)))
 }
 
 fn collect_git_files(

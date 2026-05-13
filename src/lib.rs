@@ -214,13 +214,12 @@ pub fn run() -> Result<i32> {
                 Vec::new()
             } else {
                 eprintln!("[kmpolice] mode=mr: loading base snapshot...");
-                let changed_paths = if base_sha == head_sha && worktree_dirty {
-                    git_changed_files_worktree(&args.repo)?
-                } else {
-                    git_changed_files_between(&args.repo, &base_ref, &head_ref)?
-                };
+                let mut changed_paths =
+                    git_changed_files_between(&args.repo, &base_ref, &head_ref)?;
+                let worktree_changed = git_changed_files_worktree(&args.repo)?;
+                changed_paths.extend(worktree_changed);
                 eprintln!(
-                    "[kmpolice] mode=mr: changed paths scope={}",
+                    "[kmpolice] mode=mr: changed paths scope (branch+worktree)={}",
                     changed_paths.len()
                 );
 
