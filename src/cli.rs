@@ -16,6 +16,8 @@ pub struct Cli {
     pub config: Option<PathBuf>,
     #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
+    #[arg(long, global = true)]
+    pub shared_sdk_name: Option<String>,
     #[command(subcommand)]
     pub command: CheckCommand,
 }
@@ -27,6 +29,10 @@ impl Cli {
 
     pub fn output_format(&self) -> OutputFormat {
         self.format
+    }
+
+    pub fn shared_sdk_name(&self) -> Option<&str> {
+        self.shared_sdk_name.as_deref()
     }
 }
 
@@ -73,6 +79,7 @@ impl Cli {
             CheckCommand::Check(group) => Self {
                 config: self.config,
                 format: self.format,
+                shared_sdk_name: self.shared_sdk_name,
                 command: group.command.into(),
             },
             _ => self,

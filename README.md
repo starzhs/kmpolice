@@ -16,7 +16,7 @@ Static checker for Kotlin Multiplatform interface changes against iOS Swift cont
 Check merge-request impact against target branch:
 
 ```bash
-kmpolice mr --repo /path/to/repo --target main --kotlin-root Fruitties/shared/src/commonMain/kotlin --ios-root Fruitties/iosApp/iosApp
+kmpolice mr --repo /path/to/repo --target main --kotlin-root Fruitties/shared/src/commonMain/kotlin --ios-root Fruitties/iosApp/iosApp --shared-sdk-name shared
 ```
 
 `mr` behavior:
@@ -47,6 +47,9 @@ Render JSON (CI-friendly):
 
 ```bash
 kmpolice --format json mr --repo /path/to/repo --target main
+
+Optional Swift prefilter:
+- `--shared-sdk-name <module>` keeps only Swift files importing that shared SDK (for example `--shared-sdk-name shared`).
 ```
 
 ## Config

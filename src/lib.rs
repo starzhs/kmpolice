@@ -25,11 +25,13 @@ use source::{
 pub fn run() -> Result<i32> {
     let cli = Cli::parse().normalized_command();
     let mut config = Config::load(cli.config_path())?;
+    let shared_sdk_name = cli.shared_sdk_name().map(ToOwned::to_owned);
 
     let diagnostics = match &cli.command {
         CheckCommand::Paths(args) => {
             eprintln!("[kmpolice] mode=paths: collecting files...");
-            let snapshot = load_from_paths(&args.kotlin, &args.ios, &config)?;
+            let mut snapshot = load_from_paths(&args.kotlin, &args.ios, &config)?;
+            maybe_filter_ios_by_shared_sdk(&mut snapshot, shared_sdk_name.as_deref());
             eprintln!(
                 "[kmpolice] mode=paths: kotlin_files={} ios_files={} -> analyzing...",
                 snapshot.kotlin_files.len(),
@@ -94,20 +96,21 @@ pub fn run() -> Result<i32> {
                     "[kmpolice] mode=git: changed paths scope={}",
                     changed_paths.len()
                 );
-                let base_snapshot = load_from_git_scoped(
+                let mut base_snapshot = load_from_git_scoped(
                     &args.repo,
                     &args.base_ref,
                     &config,
                     Some(&changed_paths),
                     None,
                 )?;
+                maybe_filter_ios_by_shared_sdk(&mut base_snapshot, shared_sdk_name.as_deref());
                 eprintln!(
                     "[kmpolice] mode=git: base kotlin_files={} ios_files={}",
                     base_snapshot.kotlin_files.len(),
                     base_snapshot.ios_files.len()
                 );
                 eprintln!("[kmpolice] mode=git: loading head snapshot...");
-                let head_snapshot = if base_sha == head_sha && worktree_dirty {
+                let mut head_snapshot = if base_sha == head_sha && worktree_dirty {
                     eprintln!(
                         "[kmpolice] mode=git: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
                     );
@@ -121,6 +124,7 @@ pub fn run() -> Result<i32> {
                         None,
                     )?
                 };
+                maybe_filter_ios_by_shared_sdk(&mut head_snapshot, shared_sdk_name.as_deref());
                 eprintln!(
                     "[kmpolice] mode=git: head kotlin_files={} ios_files={} -> analyzing...",
                     head_snapshot.kotlin_files.len(),
@@ -223,20 +227,21 @@ pub fn run() -> Result<i32> {
                     changed_paths.len()
                 );
 
-                let base_snapshot = load_from_git_scoped(
+                let mut base_snapshot = load_from_git_scoped(
                     &args.repo,
                     &base_ref,
                     &config,
                     Some(&changed_paths),
                     None,
                 )?;
+                maybe_filter_ios_by_shared_sdk(&mut base_snapshot, shared_sdk_name.as_deref());
                 eprintln!(
                     "[kmpolice] mode=mr: base kotlin_files={} ios_files={}",
                     base_snapshot.kotlin_files.len(),
                     base_snapshot.ios_files.len()
                 );
                 eprintln!("[kmpolice] mode=mr: loading head snapshot...");
-                let head_snapshot = if base_sha == head_sha && worktree_dirty {
+                let mut head_snapshot = if base_sha == head_sha && worktree_dirty {
                     eprintln!(
                         "[kmpolice] mode=mr: refs are identical but worktree is dirty, using WORKTREE as head snapshot."
                     );
@@ -250,6 +255,7 @@ pub fn run() -> Result<i32> {
                         None,
                     )?
                 };
+                maybe_filter_ios_by_shared_sdk(&mut head_snapshot, shared_sdk_name.as_deref());
                 eprintln!(
                     "[kmpolice] mode=mr: head kotlin_files={} ios_files={} -> analyzing...",
                     head_snapshot.kotlin_files.len(),
@@ -299,6 +305,20 @@ fn apply_roots_overrides(config: &mut Config, kotlin_roots: &[String], ios_roots
     if !ios_roots.is_empty() {
         config.ios_roots = ios_roots.to_vec();
     }
+}
+
+fn maybe_filter_ios_by_shared_sdk(snapshot: &mut ProjectSnapshot, shared_sdk_name: Option<&str>) {
+    let Some(shared_sdk_name) = shared_sdk_name else {
+        return;
+    };
+    let pattern = format!(
+        r"(?m)^\s*(?:@_exported\s+)?import\s+{}\b",
+        regex::escape(shared_sdk_name)
+    );
+    let import_regex = Regex::new(&pattern).expect("shared sdk import regex should compile");
+    snapshot
+        .ios_files
+        .retain(|file| import_regex.is_match(&file.contents));
 }
 
 fn downgrade_unverified_type_usage(diagnostics: &mut [Diagnostic]) {
