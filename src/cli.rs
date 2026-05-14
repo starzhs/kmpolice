@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum OutputFormat {
@@ -12,14 +12,22 @@ pub enum OutputFormat {
 #[command(name = "kmpolice")]
 #[command(about = "Checks Kotlin KMP interfaces against iOS Swift contracts")]
 pub struct Cli {
-    #[arg(long, global = true)]
+    #[arg(long)]
     pub config: Option<PathBuf>,
-    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
-    #[arg(long, global = true)]
-    pub shared_sdk_name: Option<String>,
-    #[command(subcommand)]
-    pub command: CheckCommand,
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+    #[arg(long, default_value = "develop")]
+    pub target: String,
+    #[arg(long = "verbose-changes", default_value_t = false)]
+    pub verbose_changes: bool,
+    #[arg(long, default_value_t = false)]
+    pub mock_progress: bool,
+    #[arg(long, default_value_t = 6000)]
+    pub mock_kotlin_files: usize,
+    #[arg(long, default_value_t = 6000)]
+    pub mock_ios_files: usize,
 }
 
 impl Cli {
@@ -30,95 +38,4 @@ impl Cli {
     pub fn output_format(&self) -> OutputFormat {
         self.format
     }
-
-    pub fn shared_sdk_name(&self) -> Option<&str> {
-        self.shared_sdk_name.as_deref()
-    }
-}
-
-#[derive(Debug, Subcommand)]
-pub enum CheckCommand {
-    Check(CheckGroup),
-    #[command(
-        about = "Best-effort direct path check without git diff context (use at your own risk)"
-    )]
-    Paths(PathsArgs),
-    Git(GitArgs),
-    Mr(MrArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct CheckGroup {
-    #[command(subcommand)]
-    pub command: NestedCheckCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum NestedCheckCommand {
-    #[command(
-        about = "Best-effort direct path check without git diff context (use at your own risk)"
-    )]
-    Paths(PathsArgs),
-    Git(GitArgs),
-    Mr(MrArgs),
-}
-
-impl From<NestedCheckCommand> for CheckCommand {
-    fn from(value: NestedCheckCommand) -> Self {
-        match value {
-            NestedCheckCommand::Paths(args) => CheckCommand::Paths(args),
-            NestedCheckCommand::Git(args) => CheckCommand::Git(args),
-            NestedCheckCommand::Mr(args) => CheckCommand::Mr(args),
-        }
-    }
-}
-
-impl Cli {
-    pub fn normalized_command(self) -> Self {
-        match self.command {
-            CheckCommand::Check(group) => Self {
-                config: self.config,
-                format: self.format,
-                shared_sdk_name: self.shared_sdk_name,
-                command: group.command.into(),
-            },
-            _ => self,
-        }
-    }
-}
-
-#[derive(Debug, Args)]
-pub struct PathsArgs {
-    #[arg(long)]
-    pub kotlin: PathBuf,
-    #[arg(long)]
-    pub ios: PathBuf,
-}
-
-#[derive(Debug, Args)]
-pub struct GitArgs {
-    #[arg(long)]
-    pub repo: PathBuf,
-    #[arg(long)]
-    pub base_ref: String,
-    #[arg(long)]
-    pub head_ref: String,
-    #[arg(long = "kotlin-root")]
-    pub kotlin_roots: Vec<String>,
-    #[arg(long = "ios-root")]
-    pub ios_roots: Vec<String>,
-    #[arg(long)]
-    pub introduced_only: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct MrArgs {
-    #[arg(long)]
-    pub repo: PathBuf,
-    #[arg(long, default_value = "develop")]
-    pub target: String,
-    #[arg(long = "kotlin-root")]
-    pub kotlin_roots: Vec<String>,
-    #[arg(long = "ios-root")]
-    pub ios_roots: Vec<String>,
 }

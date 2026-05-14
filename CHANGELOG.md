@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.1.7
+
+### Summary
+- Reworked runtime to MR-focused flow.
+- Added AST-first Kotlin API extraction for first-class categories in MR diff.
+- Added iOS usage indexing/search module with parallel Swift AST scan.
+- Added category-specific MR impact diagnostics and improved verbose reporting.
+- Added architecture/process documentation in `docs/`.
+
+### Changes
+- New MR module and pipeline wiring:
+  - `src/mr.rs`
+- New git helper module split:
+  - `src/git.rs`
+- New iOS usage module:
+  - `src/ios_usage.rs`
+- First-class Kotlin API diff entities include:
+  - constructor
+  - enum/sealed
+  - top-level
+  - companion
+  - typealias
+- Parallel processing with progress bars for:
+  - Kotlin AST expansion stage
+  - iOS usage AST stage
+- Verbose text output now includes:
+  - grouped Kotlin API change summary
+  - iOS usage index summary with matched files
+- Added MR-specific diagnostic codes:
+  - `mr_constructor_ios_impact`
+  - `mr_enum_sealed_ios_impact`
+  - `mr_top_level_ios_impact`
+  - `mr_companion_ios_impact`
+  - `mr_typealias_ios_impact`
+  - `mr_member_ios_impact`
+  - `mr_type_ios_impact`
+  - fallback `mr_kotlin_api_ios_impact`
+
+### Docs
+- `docs/mr-process-report.md`
+- `docs/mr-algorithm-vnext.md`
+- `docs/ios-usage-search.md`
+- `docs/mr-diagnostics-algorithm.md`
+
 ## 0.1.6
 
 ### Summary

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use tree_sitter::{Node, Parser, Point};
@@ -8,7 +8,9 @@ use crate::model::{
     SourceFile, SourceLocation,
 };
 
-pub fn parse_swift_files(files: &[SourceFile]) -> Result<(Vec<Contract>, Vec<Contract>)> {
+pub fn parse_swift_files(
+    files: &[SourceFile],
+) -> Result<(Vec<Contract>, Vec<Contract>, HashSet<String>)> {
     let mut parser = Parser::new();
     parser
         .set_language(&tree_sitter_swift::language())
@@ -17,12 +19,14 @@ pub fn parse_swift_files(files: &[SourceFile]) -> Result<(Vec<Contract>, Vec<Con
     let mut protocols = HashMap::<String, Contract>::new();
     let mut types = HashMap::<String, Contract>::new();
     let mut extensions = Vec::<SwiftExtension>::new();
+    let mut generic_placeholders = HashSet::<String>::new();
 
     for file in files {
         let tree = parser
             .parse(&file.contents, None)
             .with_context(|| format!("failed to parse Swift file {}", file.path))?;
         let root = tree.root_node();
+        collect_swift_generic_placeholders(root, &file.contents, &mut generic_placeholders);
         let mut cursor = root.walk();
 
         for child in root.named_children(&mut cursor) {
@@ -61,7 +65,68 @@ pub fn parse_swift_files(files: &[SourceFile]) -> Result<(Vec<Contract>, Vec<Con
     Ok((
         protocols.into_values().collect(),
         types.into_values().collect(),
+        generic_placeholders,
     ))
+}
+
+fn collect_swift_generic_placeholders(node: Node<'_>, source: &str, output: &mut HashSet<String>) {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.kind().contains("generic_parameter")
+            && let Some(name_node) = current.child_by_field_name("name")
+            && let Some(name) = node_text(name_node, source)
+        {
+            let normalized = name.trim();
+            if !normalized.is_empty() {
+                output.insert(normalized.to_string());
+            }
+        }
+        if (current.kind().contains("type_parameters")
+            || current.kind().contains("generic_parameter_clause"))
+            && let Some(clause_text) = node_text(current, source)
+        {
+            for name in parse_generic_names_from_clause_text(clause_text) {
+                output.insert(name);
+            }
+        }
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+fn parse_generic_names_from_clause_text(clause: &str) -> Vec<String> {
+    let trimmed = clause.trim();
+    let inner = trimmed
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(trimmed);
+    inner
+        .split(',')
+        .filter_map(|part| {
+            let candidate = part.trim();
+            if candidate.is_empty() {
+                return None;
+            }
+            let head = candidate.split(':').next().unwrap_or(candidate).trim();
+            let mut name = String::new();
+            for character in head.chars() {
+                if name.is_empty() {
+                    if character.is_ascii_alphabetic() || character == '_' {
+                        name.push(character);
+                    } else if !character.is_whitespace() {
+                        break;
+                    }
+                } else if character.is_ascii_alphanumeric() || character == '_' {
+                    name.push(character);
+                } else {
+                    break;
+                }
+            }
+            if name.is_empty() { None } else { Some(name) }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -428,7 +493,8 @@ mod tests {
             snapshot: None,
         }];
 
-        let (protocols, types) = parse_swift_files(&files).expect("swift parsing should succeed");
+        let (protocols, types, _generic_placeholders) =
+            parse_swift_files(&files).expect("swift parsing should succeed");
         let protocol_contract = protocols.first().expect("protocol expected");
         let type_contract = types.first().expect("type expected");
 
@@ -444,5 +510,22 @@ mod tests {
             MemberSignature::Method(method) => assert_eq!(method.parameters.len(), 2),
             _ => panic!("expected method"),
         }
+    }
+
+    #[test]
+    fn collects_generic_placeholders() {
+        let files = vec![SourceFile {
+            path: "Generic.swift".to_string(),
+            contents: r#"
+                struct Box<T, U: Equatable> {}
+            "#
+            .to_string(),
+            snapshot: None,
+        }];
+
+        let (_protocols, _types, generic_placeholders) =
+            parse_swift_files(&files).expect("swift parsing should succeed");
+        assert!(generic_placeholders.contains("T"));
+        assert!(generic_placeholders.contains("U"));
     }
 }

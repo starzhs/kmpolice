@@ -1,85 +1,56 @@
 # kmpolice
 
-Static checker for Kotlin Multiplatform interface changes against iOS Swift contracts.
+Static checker for Kotlin Multiplatform API changes and their impact on iOS Swift usage.
 
-## What it catches
+## Current CLI (MR-focused)
 
-- missing Swift protocols for Kotlin interfaces
-- missing or stale members on Swift protocols
-- parameter count, name, and type mismatches
-- return type mismatches
-- property mutability mismatches
-- broken Swift conformances after contract changes
-
-## Usage
-
-Check merge-request impact against target branch:
+`kmpolice` currently runs MR-oriented analysis by default.
 
 ```bash
-kmpolice mr --repo /path/to/repo --target main --kotlin-root Fruitties/shared/src/commonMain/kotlin --ios-root Fruitties/iosApp/iosApp --shared-sdk-name shared
+kmpolice --repo /path/to/repo --target main --format text --verbose-changes
 ```
 
-`mr` behavior:
-- compares from `merge-base(target, HEAD)` to current `HEAD`
-- always includes local worktree changes (staged, unstaged, untracked)
-- Kotlin is scoped by changed paths; iOS is scanned fully inside `ios_root`
+Arguments:
+- `--repo` path to git repository (default `.`)
+- `--target` target branch/ref for merge-base (default `develop`)
+- `--format` `text` or `json`
+- `--config` optional TOML config
+- `--verbose-changes` append human-readable Kotlin API changes + iOS usage index section (text mode)
 
-Check explicit refs inside a git repository:
+## What MR mode does
+
+1. Computes `merge-base(target, HEAD)`.
+2. Builds Kotlin changed-path scope from:
+- `merge-base..HEAD`
+- staged/unstaged/untracked worktree changes
+3. Filters Kotlin scope to `commonMain` and `iosMain` (`.kt` only).
+4. Builds Kotlin API change set (AST-first) for changed files.
+5. Scans iOS files for usage impact using indexed token prefilter + Swift AST identifiers.
+6. Emits diagnostics, including category-specific MR impact codes:
+- `mr_constructor_ios_impact`
+- `mr_enum_sealed_ios_impact`
+- `mr_top_level_ios_impact`
+- `mr_companion_ios_impact`
+- `mr_typealias_ios_impact`
+- `mr_member_ios_impact`
+- `mr_type_ios_impact`
+
+Exit code:
+- `0` when no diagnostics
+- `1` when diagnostics exist
+- `2` on runtime/tooling error
+
+## Mock progress mode
+
+For local UX/debugging of progress without a large repo:
 
 ```bash
-kmpolice git --repo /path/to/repo --base-ref main --head-ref HEAD --introduced-only --kotlin-root Fruitties/shared/src/commonMain/kotlin --ios-root Fruitties/iosApp/iosApp
+kmpolice --mock-progress --mock-kotlin-files 6000 --mock-ios-files 6000 --format text
 ```
 
-`git` mode is useful when you need strict ref-to-ref comparison (for CI gates, release branches, or custom base/head pairs) instead of MR semantics.
-
-Check two directories directly:
-
-```bash
-kmpolice paths --kotlin /path/to/shared/src --ios /path/to/ios/Sources
-```
-
-`paths` behavior:
-- prefers git-indexed files when the path is inside a git repository
-- falls back to filesystem walk when outside git
-- skips generated/build noise paths
-
-Render JSON (CI-friendly):
-
-```bash
-kmpolice --format json mr --repo /path/to/repo --target main
-
-Optional Swift prefilter:
-- `--shared-sdk-name <module>` keeps only Swift files importing that shared SDK (for example `--shared-sdk-name shared`).
-```
-
-## Config
-
-Pass `--config /path/to/kmpolice.toml` (any TOML filename is fine).
-
-Supported config keys:
-
-- `kotlin_roots`
-- `ios_roots`
-- `include`
-- `exclude`
-- `mappings`
-- `naming`
-- `ignore`
-- `severity`
-
-See [`kmp-interface-checker.toml.example`](./kmp-interface-checker.toml.example).
-
-## Notes
-
-- Kotlin is treated as the source of truth.
-- v1 focuses on Kotlin interfaces, Swift protocols, and Swift implementations.
-- `git` mode analyzes exact refs and can report only newly introduced diagnostics.
-- `mr` mode is branch-vs-target with worktree changes included.
-- `paths` mode has no diff context and is best-effort.
+This runs parallel synthetic loaders and shows interactive progress bars.
 
 ## Install (Homebrew)
-
-Tap install:
 
 ```bash
 brew tap starzhs/kmpolice https://github.com/starzhs/homebrew-kmpolice
@@ -93,20 +64,9 @@ brew update
 brew upgrade kmpolice
 ```
 
-## Homebrew publishing notes
+## Documentation
 
-Repository contains brew packaging scaffolding:
-- Formula template: `packaging/homebrew/Formula/kmpolice.rb`
-- Release workflow: `.github/workflows/release.yml`
-- Formula renderer helper: `scripts/render_brew_formula.sh`
-
-Recommended publish flow:
-
-1. Push git tag, e.g. `v0.1.4`.
-2. Wait for GitHub Actions `release` workflow to publish archives and `.sha256` files.
-3. Create/update tap repository (usually `homebrew-kmpolice`) and place final `Formula/kmpolice.rb`.
-4. Fill URLs/SHA256 in formula from release artifacts.
-5. Validate:
-   - `brew install --formula ./Formula/kmpolice.rb`
-   - `brew test kmpolice`
-   - `brew audit --strict --formula ./Formula/kmpolice.rb`
+- MR process report: `docs/mr-process-report.md`
+- MR vNext algorithm: `docs/mr-algorithm-vnext.md`
+- iOS usage search logic: `docs/ios-usage-search.md`
+- MR diagnostics algorithm: `docs/mr-diagnostics-algorithm.md`

@@ -156,7 +156,7 @@ fn compare_additional_kotlin_api_usages(
     diagnostics.extend(check_property_usages(snapshot, &index, config));
     diagnostics.extend(check_enum_and_sealed_switches(snapshot, &index, config));
     diagnostics.extend(check_typealias_and_nested_type_usages(
-        snapshot, &index, config,
+        analysis, snapshot, &index, config,
     ));
     diagnostics.extend(check_top_level_usages(snapshot, &index, config));
     diagnostics.extend(check_companion_member_usages(snapshot, &index, config));
@@ -997,6 +997,7 @@ fn push_missing_case_diagnostic(
 }
 
 fn check_typealias_and_nested_type_usages(
+    analysis: &AnalysisResult,
     snapshot: &ProjectSnapshot,
     index: &KotlinApiIndex,
     config: &Config,
@@ -1004,33 +1005,25 @@ fn check_typealias_and_nested_type_usages(
     let mut diagnostics = Vec::new();
     let typed_decl_regex =
         Regex::new(r"\b(?:let|var)\s+\w+\s*:\s*([A-Z][A-Za-z_0-9]*)").expect("typed decl regex");
-    let swift_type_decl_regex =
-        Regex::new(r"(?m)^\s*(?:struct|class|protocol|enum)\s+[A-Za-z_]\w*(?:\s*<([^>]+)>)?")
-            .expect("swift decl regex");
     let swift_common_types: HashSet<&str> = [
         "String", "Int", "Bool", "Double", "Float", "Void", "Any", "Data", "URL",
     ]
     .into_iter()
     .collect();
     let mut local_swift_types = HashSet::<String>::new();
-    let mut local_generic_names = HashSet::<String>::new();
-    for file in &snapshot.ios_files {
-        for captures in swift_type_decl_regex.captures_iter(&file.contents) {
-            if let Some(generics) = captures.get(1) {
-                for generic_name in generics.as_str().split(',') {
-                    local_generic_names.insert(generic_name.trim().to_string());
-                }
-            }
-            let line = captures.get(0).map(|m| m.as_str()).unwrap_or_default();
-            if let Some(name) = line
-                .split_whitespace()
-                .nth(1)
-                .map(|value| value.split('<').next().unwrap_or(value))
-            {
-                local_swift_types.insert(name.to_string());
-            }
-        }
-    }
+    local_swift_types.extend(
+        analysis
+            .swift_types
+            .iter()
+            .map(|contract| contract.name.clone()),
+    );
+    local_swift_types.extend(
+        analysis
+            .swift_protocols
+            .iter()
+            .map(|contract| contract.name.clone()),
+    );
+    let local_generic_names = &analysis.swift_generic_placeholders;
 
     for file in &snapshot.ios_files {
         if !file.contents.contains("import shared") {
@@ -2371,6 +2364,126 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|d| d.code == "kotlin_type_usage_missing")
+        );
+    }
+
+    #[test]
+    fn does_not_report_missing_for_local_final_swift_type() {
+        let snapshot = ProjectSnapshot {
+            label: "workspace".to_string(),
+            kotlin_files: vec![SourceFile {
+                path: "Known.kt".to_string(),
+                contents: r#"
+                    class Known
+                "#
+                .to_string(),
+                snapshot: None,
+            }],
+            ios_files: vec![
+                SourceFile {
+                    path: "Local.swift".to_string(),
+                    contents: r#"
+                        final class ViewModel {}
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+                SourceFile {
+                    path: "Use.swift".to_string(),
+                    contents: r#"
+                        import shared
+                        func f() {
+                            let _: ViewModel = ViewModel()
+                        }
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+            ],
+        };
+
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "kotlin_type_usage_missing")
+        );
+    }
+
+    #[test]
+    fn does_not_report_missing_for_local_public_struct_type() {
+        let snapshot = ProjectSnapshot {
+            label: "workspace".to_string(),
+            kotlin_files: vec![SourceFile {
+                path: "Known.kt".to_string(),
+                contents: "class Known".to_string(),
+                snapshot: None,
+            }],
+            ios_files: vec![
+                SourceFile {
+                    path: "Local.swift".to_string(),
+                    contents: "public struct ViewModel {}".to_string(),
+                    snapshot: None,
+                },
+                SourceFile {
+                    path: "Use.swift".to_string(),
+                    contents: r#"
+                        import shared
+                        func f() {
+                            let _: ViewModel = ViewModel()
+                        }
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+            ],
+        };
+
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "kotlin_type_usage_missing")
+        );
+    }
+
+    #[test]
+    fn does_not_report_missing_for_local_public_enum_type() {
+        let snapshot = ProjectSnapshot {
+            label: "workspace".to_string(),
+            kotlin_files: vec![SourceFile {
+                path: "Known.kt".to_string(),
+                contents: "class Known".to_string(),
+                snapshot: None,
+            }],
+            ios_files: vec![
+                SourceFile {
+                    path: "Local.swift".to_string(),
+                    contents: "public enum ViewState { case idle }".to_string(),
+                    snapshot: None,
+                },
+                SourceFile {
+                    path: "Use.swift".to_string(),
+                    contents: r#"
+                        import shared
+                        func f() {
+                            let _: ViewState = .idle
+                        }
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+            ],
+        };
+
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "kotlin_type_usage_missing")
         );
     }
 

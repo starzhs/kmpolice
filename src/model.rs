@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::HashSet;
 
 use crate::config::Severity;
 
@@ -71,6 +72,7 @@ pub struct AnalysisResult {
     pub kotlin_contracts: Vec<Contract>,
     pub swift_protocols: Vec<Contract>,
     pub swift_types: Vec<Contract>,
+    pub swift_generic_placeholders: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
