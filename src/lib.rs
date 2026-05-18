@@ -14,17 +14,24 @@ use clap::Parser;
 
 use cli::{Cli, OutputFormat};
 use config::Config;
-use mr::{render_ios_usage_report, render_verbose_changes, run_mock_progress, run_mr};
+use mr::{render_ios_usage_report, render_verbose_changes, run_mr};
 use report::{render_json, render_text};
 
 pub fn run() -> Result<i32> {
     let cli = Cli::parse();
     let config = Config::load(cli.config_path())?;
-    let result = if cli.mock_progress {
-        run_mock_progress(cli.mock_kotlin_files, cli.mock_ios_files)
-    } else {
-        run_mr(&cli.repo, &cli.target, &config, cli.verbose_changes)?
-    };
+    let shared_sdk_name = cli
+        .shared_sdk_name
+        .clone()
+        .or_else(|| config.shared_sdk_name.clone())
+        .unwrap_or_else(|| "shared".to_string());
+    let result = run_mr(
+        &cli.repo,
+        &cli.target,
+        &config,
+        cli.verbose_changes,
+        &shared_sdk_name,
+    )?;
     let diagnostics = result.diagnostics;
 
     let mut output = match cli.output_format() {

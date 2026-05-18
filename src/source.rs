@@ -105,6 +105,21 @@ pub fn load_from_worktree_scoped(
     })
 }
 
+pub fn collect_worktree_paths_scoped(
+    repo: &Path,
+    config: &Config,
+    extension: &str,
+) -> Result<Vec<String>> {
+    let matcher = config.path_matcher()?;
+    let files = git_ls_files_worktree(repo)?;
+    let roots = if extension == "swift" {
+        &config.ios_roots
+    } else {
+        &config.kotlin_roots
+    };
+    collect_worktree_paths_from_git_list(&files, extension, &matcher, roots)
+}
+
 fn collect_path_files(
     root: &Path,
     extension: &str,
@@ -337,6 +352,37 @@ fn collect_worktree_git_list_files(
         });
     }
 
+    Ok(collected)
+}
+
+fn collect_worktree_paths_from_git_list(
+    files: &[String],
+    extension: &str,
+    matcher: &PathMatcher,
+    roots: &[String],
+) -> Result<Vec<String>> {
+    let mut collected = Vec::new();
+
+    for path in files {
+        if is_ignored_generated_path(path) {
+            continue;
+        }
+        if Path::new(path).extension() != Some(OsStr::new(extension)) {
+            continue;
+        }
+        let relative = path.replace('\\', "/");
+        if !roots.is_empty()
+            && !roots
+                .iter()
+                .any(|root| relative.starts_with(root.trim_end_matches('/')))
+        {
+            continue;
+        }
+        if !matcher.is_included(&relative) {
+            continue;
+        }
+        collected.push(relative);
+    }
     Ok(collected)
 }
 

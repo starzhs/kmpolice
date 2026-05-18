@@ -20,14 +20,10 @@ pub struct Cli {
     pub repo: PathBuf,
     #[arg(long, default_value = "develop")]
     pub target: String,
+    #[arg(long = "shared-sdk-name")]
+    pub shared_sdk_name: Option<String>,
     #[arg(long = "verbose-changes", default_value_t = false)]
     pub verbose_changes: bool,
-    #[arg(long, default_value_t = false)]
-    pub mock_progress: bool,
-    #[arg(long, default_value_t = 6000)]
-    pub mock_kotlin_files: usize,
-    #[arg(long, default_value_t = 6000)]
-    pub mock_ios_files: usize,
 }
 
 impl Cli {

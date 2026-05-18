@@ -35,7 +35,7 @@ This document defines how diagnostics are produced in MR mode from Kotlin API ch
   - emit a diagnostic with:
     - code by change kind
     - message: Kotlin change + iOS file
-    - hint: change details + matched tokens
+    - hint: change details + matched tokens + Swift file touched/untouched status
     - evidence: `mr_mode:diff_aware`, `kotlin_change_detected`, `ios_usage_index_hit`
 
 3. Final diagnostics list

@@ -38,6 +38,7 @@
 - [ ] Остальные git edge-cases из расширенного списка (вне 0.1.1 scope)
 - [ ] Full-scan uncertainty model без diff (глубокая оценка происхождения символов)
 - [ ] Полноценный module/type resolution через Swift toolchain (SourceKit/indexstore)
+- [ ] Generic-сигнатуры Kotlin `fun`/`suspend fun` (type parameters, bounds, function-type args, return generic) как first-class diff и отдельные diagnostics
 - [ ] Сложные alias/import transitive-resolution сценарии
 - [ ] Interop-аннотации (`@ObjCName`, `@HiddenFromObjC`, `@Throws`)
 - [ ] Visibility regressions (`public -> internal/private`)

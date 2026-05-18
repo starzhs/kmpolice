@@ -15,6 +15,7 @@ Arguments:
 - `--target` target branch/ref for merge-base (default `develop`)
 - `--format` `text` or `json`
 - `--config` optional TOML config
+- `--shared-sdk-name` Swift import module name for shared KMP SDK (CLI override)
 - `--verbose-changes` append human-readable Kotlin API changes + iOS usage index section (text mode)
 
 ## What MR mode does
@@ -25,7 +26,12 @@ Arguments:
 - staged/unstaged/untracked worktree changes
 3. Filters Kotlin scope to `commonMain` and `iosMain` (`.kt` only).
 4. Builds Kotlin API change set (AST-first) for changed files.
-5. Scans iOS files for usage impact using indexed token prefilter + Swift AST identifiers.
+5. Scans iOS files using a cascade:
+- enumerate Swift files
+- `import <shared-sdk-name>` filter
+- token prefilter from Kotlin changes
+- Swift AST parse only for candidates
+- usage match against changed Kotlin symbols
 6. Emits diagnostics, including category-specific MR impact codes:
 - `mr_constructor_ios_impact`
 - `mr_enum_sealed_ios_impact`
@@ -39,16 +45,6 @@ Exit code:
 - `0` when no diagnostics
 - `1` when diagnostics exist
 - `2` on runtime/tooling error
-
-## Mock progress mode
-
-For local UX/debugging of progress without a large repo:
-
-```bash
-kmpolice --mock-progress --mock-kotlin-files 6000 --mock-ios-files 6000 --format text
-```
-
-This runs parallel synthetic loaders and shows interactive progress bars.
 
 ## Install (Homebrew)
 

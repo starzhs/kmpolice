@@ -38,6 +38,8 @@ pub struct Config {
     pub ignore: IgnoreConfig,
     #[serde(default)]
     pub severity: BTreeMap<String, Severity>,
+    #[serde(default)]
+    pub shared_sdk_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

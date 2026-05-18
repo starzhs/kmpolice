@@ -3,8 +3,8 @@
 This document describes how `kmpolice` finds iOS usages for Kotlin API changes in MR mode.
 
 ## Entry Point
-- `find_ios_usages(api_changes, ios_files)`
-- Code: `src/ios_usage.rs:27`
+- `find_ios_usages(api_changes, repo, ios_paths, shared_sdk_name, swift_changed_paths)`
+- Code: `src/ios_usage.rs`
 
 ## Data Structures
 - `IosUsageHit { file, symbol, kind, evidence }`
@@ -24,9 +24,9 @@ This document describes how `kmpolice` finds iOS usages for Kotlin API changes i
   - whole symbol if identifier-like
   - member name parsed from change details (e.g. from backticks)
 
-2. Fast candidate filter over all iOS files
+2. Cascade candidate filter over all iOS files
 - Candidate condition:
-  - file contains shared import (`import shared` or `import shared.*`)
+  - file contains shared import (`import <shared_sdk_name>` or `import <shared_sdk_name>.*`)
   - file contains at least one indexed token by word-boundary-like check
 - Code:
   - `contains_shared_import`: `src/ios_usage.rs:141`
@@ -36,7 +36,7 @@ This document describes how `kmpolice` finds iOS usages for Kotlin API changes i
 3. Parallel AST parse of candidate files
 - Uses `rayon` with `par_iter`
 - One Swift parser per worker/file
-- Code: `src/ios_usage.rs:53`
+- Code: `src/ios_usage.rs`
 
 4. Identifier extraction from Swift AST
 - DFS over named nodes, collect identifier-like texts
@@ -53,16 +53,18 @@ This document describes how `kmpolice` finds iOS usages for Kotlin API changes i
 - `candidate_files`: number of files after prefilter
 - `parsed_files`: number of files successfully parsed
 - `hits`: matched `(file, symbol, kind, evidence)`
-- Code: `src/ios_usage.rs:88`
+- `touched_hits`/`untouched_hits`: matched files that are already changed vs untouched in MR
+- Code: `src/ios_usage.rs`
 
 ## Progress Reporting
 - Progress is rendered via `indicatif` to `stderr`.
-- Stage name: `iOS usage AST`
-- Includes dynamic "last file" message.
-- Code:
-  - progress bar setup: `src/ios_usage.rs:43`
-  - update last file: `src/ios_usage.rs:81`
-  - finish message: `src/ios_usage.rs:86`
+- Stages:
+  - `Swift enumerate`
+  - `Swift import filter`
+  - `Swift token filter`
+  - `Swift AST parse`
+  - `Swift usage match`
+- Each stage reports counters and dynamic `last file`.
 
 ## Nested-Type Behavior
 Current behavior for nested symbols is root-driven in index:

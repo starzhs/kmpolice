@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.8
+
+### Summary
+- Implemented cascade Swift call-site scan from Kotlin MR changes.
+- Removed mock progress mode and switched runtime to single MR flow.
+- Added configurable shared SDK import filter (`--shared-sdk-name` + config fallback).
+- Added touched/untouched Swift usage classification and diagnostics hints.
+- Added tests for new iOS usage pipeline.
+
+### Changes
+- Removed CLI/runtime mock branch (`--mock-progress`, synthetic loaders).
+- Added `shared_sdk_name` support:
+  - CLI: `--shared-sdk-name`
+  - config: `shared_sdk_name`
+  - default: `shared`
+- Reworked iOS usage search to path-based cascade with parallel stages:
+  - enumerate
+  - import filter
+  - token filter
+  - AST parse
+  - usage match
+- Added cascade progress reporting with per-stage counters and `last file`.
+- Added Swift changed-file awareness (`already_touched` vs `untouched`) into:
+  - usage report counters
+  - MR impact diagnostic hints/evidence
+- Added helper to collect scoped Swift paths from worktree for the new scanner.
+- Added unit tests in `src/ios_usage.rs` covering:
+  - custom shared SDK import
+  - import-filter exclusion
+  - untouched-hit classification
+
 ## 0.1.7
 
 ### Summary

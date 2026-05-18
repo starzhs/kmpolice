@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use anyhow::Result;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use tree_sitter::{Node, Parser};
 
@@ -16,7 +14,7 @@ use crate::ios_usage::{find_ios_usages, IosUsageReport};
 use crate::model::{
     Contract, ContractKind, Diagnostic, Member, MemberSignature, ProjectSnapshot, SourceFile,
 };
-use crate::source::{load_from_git_scoped, load_from_worktree_scoped};
+use crate::source::{collect_worktree_paths_scoped, load_from_git_scoped, load_from_worktree_scoped};
 
 #[derive(Debug, Clone)]
 pub struct ApiChange {
@@ -33,11 +31,19 @@ pub struct MrResult {
     pub ios_usage: IosUsageReport,
 }
 
-pub fn run_mr(repo: &Path, target: &str, config: &Config, verbose: bool) -> Result<MrResult> {
+pub fn run_mr(
+    repo: &Path,
+    target: &str,
+    config: &Config,
+    verbose: bool,
+    shared_sdk_name: &str,
+) -> Result<MrResult> {
     let repo = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
     let base = merge_base(&repo, target, "HEAD")?;
 
     let kotlin_changed = collect_kotlin_changed_paths(&repo, &base)?;
+    let swift_changed = collect_swift_changed_paths(&repo, &base)?;
+    let ios_paths = collect_worktree_paths_scoped(&repo, config, "swift")?;
     let ios_scope = None;
     let kotlin_scope = Some(&kotlin_changed);
 
@@ -49,7 +55,13 @@ pub fn run_mr(repo: &Path, target: &str, config: &Config, verbose: bool) -> Resu
     let mut diagnostics = introduced_diagnostics(base_diags, head_diags);
 
     let api_changes = diff_kotlin_api_changes(&repo, &base, &kotlin_changed, &base_snapshot, &head_snapshot)?;
-    let ios_usage = find_ios_usages(&api_changes, &head_snapshot.ios_files)?;
+    let ios_usage = find_ios_usages(
+        &api_changes,
+        &repo,
+        &ios_paths,
+        shared_sdk_name,
+        &swift_changed,
+    )?;
     diagnostics.extend(build_ios_impact_diagnostics(&api_changes, &ios_usage, config));
     if verbose {
         print_verbose_changes(&api_changes);
@@ -92,8 +104,14 @@ fn build_ios_impact_diagnostics(
                 hit.kind, hit.symbol, hit.file
             ),
             hint: format!(
-                "change detail: {}; matched tokens: {}; verify/update Swift usage",
-                change.details, hit.evidence
+                "change detail: {}; matched tokens: {}; swift file status: {}; verify/update call-site",
+                change.details,
+                hit.evidence,
+                if hit.already_touched {
+                    "already_touched_in_mr"
+                } else {
+                    "untouched_in_mr"
+                }
             ),
             kotlin_symbol: Some(hit.symbol.clone()),
             ios_symbol: Some(hit.file.clone()),
@@ -106,6 +124,11 @@ fn build_ios_impact_diagnostics(
                 "mr_mode:diff_aware".to_string(),
                 "kotlin_change_detected".to_string(),
                 "ios_usage_index_hit".to_string(),
+                if hit.already_touched {
+                    "swift_file:already_touched".to_string()
+                } else {
+                    "swift_file:untouched".to_string()
+                },
             ],
         });
     }
@@ -125,68 +148,6 @@ fn impact_code_for_kind(kind: &str) -> &'static str {
     }
 }
 
-pub fn run_mock_progress(kotlin_files: usize, ios_files: usize) -> MrResult {
-    let multi = MultiProgress::new();
-    let kotlin_bar = multi.add(ProgressBar::new(kotlin_files as u64));
-    let ios_bar = multi.add(ProgressBar::new(ios_files as u64));
-    let total = kotlin_files.saturating_add(ios_files);
-    let overall_bar = multi.add(ProgressBar::new(total as u64));
-
-    let style = ProgressStyle::with_template(
-        "{spinner:.green} {msg:<44} [{bar:30.cyan/blue}] {pos}/{len} ({percent}%)",
-    )
-    .expect("progress style should compile")
-    .progress_chars("=> ");
-
-    kotlin_bar.set_style(style.clone());
-    ios_bar.set_style(style.clone());
-    overall_bar.set_style(style);
-
-    kotlin_bar.set_message("kotlin: waiting");
-    ios_bar.set_message("ios: waiting");
-    overall_bar.set_message("overall");
-
-    let kotlin_worker = {
-        let kotlin_bar = kotlin_bar.clone();
-        let overall_bar = overall_bar.clone();
-        thread::spawn(move || {
-            for idx in 0..kotlin_files {
-                let file = format!("shared/src/commonMain/kotlin/mock/File{idx}.kt");
-                kotlin_bar.set_message(format!("kotlin: {file}"));
-                thread::sleep(Duration::from_millis(2));
-                kotlin_bar.inc(1);
-                overall_bar.inc(1);
-            }
-            kotlin_bar.finish_with_message("kotlin: done");
-        })
-    };
-
-    let ios_worker = {
-        let ios_bar = ios_bar.clone();
-        let overall_bar = overall_bar.clone();
-        thread::spawn(move || {
-            for idx in 0..ios_files {
-                let file = format!("iosApp/iosApp/mock/File{idx}.swift");
-                ios_bar.set_message(format!("ios: {file}"));
-                thread::sleep(Duration::from_millis(2));
-                ios_bar.inc(1);
-                overall_bar.inc(1);
-            }
-            ios_bar.finish_with_message("ios: done");
-        })
-    };
-
-    let _ = kotlin_worker.join();
-    let _ = ios_worker.join();
-    overall_bar.finish_with_message("overall: done");
-
-    MrResult {
-        diagnostics: Vec::new(),
-        api_changes: Vec::new(),
-        ios_usage: IosUsageReport::default(),
-    }
-}
-
 fn collect_kotlin_changed_paths(repo: &Path, base: &str) -> Result<HashSet<String>> {
     let mut changed = git_changed_files_between(repo, base, "HEAD")?;
     changed.extend(git_changed_files_worktree(repo)?);
@@ -194,6 +155,15 @@ fn collect_kotlin_changed_paths(repo: &Path, base: &str) -> Result<HashSet<Strin
         .into_iter()
         .filter(|path| path.ends_with(".kt"))
         .filter(|path| path.contains("/commonMain/") || path.contains("/iosMain/"))
+        .collect())
+}
+
+fn collect_swift_changed_paths(repo: &Path, base: &str) -> Result<HashSet<String>> {
+    let mut changed = git_changed_files_between(repo, base, "HEAD")?;
+    changed.extend(git_changed_files_worktree(repo)?);
+    Ok(changed
+        .into_iter()
+        .filter(|path| path.ends_with(".swift"))
         .collect())
 }
 
@@ -426,16 +396,27 @@ pub fn render_verbose_changes(changes: &[ApiChange]) -> String {
 pub fn render_ios_usage_report(report: &IosUsageReport) -> String {
     let mut out = String::new();
     out.push_str("iOS usage index:");
+    out.push_str(&format!("\n- swift files total: {}", report.swift_files_total));
     out.push_str(&format!(
         "\n- candidate files: {}",
         report.candidate_files
     ));
     out.push_str(&format!("\n- parsed files: {}", report.parsed_files));
     out.push_str(&format!("\n- matches: {}", report.hits.len()));
+    out.push_str(&format!("\n- touched matches: {}", report.touched_hits));
+    out.push_str(&format!("\n- untouched matches: {}", report.untouched_hits));
     for hit in &report.hits {
         out.push_str(&format!(
-            "\n- [{}] {} in {} ({})",
-            hit.kind, hit.symbol, hit.file, hit.evidence
+            "\n- [{}] {} in {} ({}, {})",
+            hit.kind,
+            hit.symbol,
+            hit.file,
+            hit.evidence,
+            if hit.already_touched {
+                "already_touched"
+            } else {
+                "untouched"
+            }
         ));
     }
     out
