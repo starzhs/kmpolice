@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.10
+
+### Summary
+- Fixed MR scoped loading so Kotlin changes under `iosMain` are not dropped by `kotlin_roots`.
+
+### Changes
+- In scoped (`changed_paths`) snapshot loading, root-based path filtering is bypassed.
+- Applied to both:
+  - git snapshot collection (`collect_git_files`)
+  - worktree snapshot collection (`collect_worktree_git_list_files`)
+- This ensures changed Kotlin files from `commonMain` and `iosMain` are included consistently in MR analysis.
+
 ## 0.1.9
 
 ### Summary

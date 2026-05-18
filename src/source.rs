@@ -239,7 +239,8 @@ fn collect_git_files(
             continue;
         }
 
-        if !roots.is_empty()
+        if changed_paths.is_none()
+            && !roots.is_empty()
             && !roots
                 .iter()
                 .any(|root| path.starts_with(root.trim_end_matches('/')))
@@ -312,7 +313,8 @@ fn collect_worktree_git_list_files(
 
         let relative = path.replace('\\', "/");
 
-        if !roots.is_empty()
+        if changed_paths.is_none()
+            && !roots.is_empty()
             && !roots
                 .iter()
                 .any(|root| relative.starts_with(root.trim_end_matches('/')))
