@@ -1,9 +1,9 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use anyhow::{Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashSet;
 use walkdir::WalkDir;
 
@@ -260,44 +260,33 @@ fn collect_git_files(
         candidates.push(path);
     }
 
-    eprintln!(
-        "[kmpolice] snapshot={} ext=.{} candidates={}",
-        git_ref,
-        extension,
-        candidates.len()
+    let progress = ProgressBar::new(candidates.len() as u64);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} {msg:<72} [{bar:30.cyan/blue}] {pos}/{len} ({percent}%)",
+        )
+        .expect("snapshot progress style")
+        .progress_chars("=> "),
     );
+    progress.set_message(format!(
+        "Snapshot load {} .{} | waiting...",
+        git_ref, extension
+    ));
 
-    let started_at = Instant::now();
-    for (index, path) in candidates.iter().enumerate() {
-        if index > 0 && index % 200 == 0 {
-            eprintln!(
-                "[kmpolice] snapshot={} ext=.{} loaded {}/{} files (elapsed: {:.1}s)...",
-                git_ref,
-                extension,
-                index,
-                candidates.len(),
-                started_at.elapsed().as_secs_f64()
-            );
-        }
-
+    for path in candidates.iter() {
+        progress.set_message(format!(
+            "Snapshot load {} .{} | last file: {}",
+            git_ref, extension, path
+        ));
         let contents = git_show(repo, git_ref, path)?;
         files.push(SourceFile {
             path: (*path).clone(),
             contents,
             snapshot: Some(git_ref.to_string()),
         });
+        progress.inc(1);
     }
-
-    if !candidates.is_empty() {
-        eprintln!(
-            "[kmpolice] snapshot={} ext=.{} loaded {}/{} files (elapsed: {:.1}s).",
-            git_ref,
-            extension,
-            candidates.len(),
-            candidates.len(),
-            started_at.elapsed().as_secs_f64()
-        );
-    }
+    progress.finish_with_message(format!("Snapshot load {} .{} | done", git_ref, extension));
 
     Ok(files)
 }

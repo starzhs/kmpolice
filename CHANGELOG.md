@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.9
+
+### Summary
+- Scoped MR snapshot iOS loading to changed Swift paths.
+- Replaced legacy `loaded 200/...` snapshot logs with interactive progress bars.
+
+### Changes
+- `mr` now passes `ios_scope = swift_changed_paths` to snapshot loaders to avoid full Swift snapshot reads when unnecessary.
+- Snapshot loading in `source::collect_git_files` now uses `indicatif` with:
+  - progress counters
+  - `last file` message
+  - explicit stage completion message
+- Removed old periodic text logs emitted every 200 files during snapshot load.
+
 ## 0.1.8
 
 ### Summary

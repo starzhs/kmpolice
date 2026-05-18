@@ -44,7 +44,7 @@ pub fn run_mr(
     let kotlin_changed = collect_kotlin_changed_paths(&repo, &base)?;
     let swift_changed = collect_swift_changed_paths(&repo, &base)?;
     let ios_paths = collect_worktree_paths_scoped(&repo, config, "swift")?;
-    let ios_scope = None;
+    let ios_scope = Some(&swift_changed);
     let kotlin_scope = Some(&kotlin_changed);
 
     let base_snapshot = load_from_git_scoped(&repo, &base, config, kotlin_scope, ios_scope)?;
