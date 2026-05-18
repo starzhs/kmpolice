@@ -142,12 +142,21 @@ pub fn find_ios_usages(
                 if expected.is_empty() {
                     continue;
                 }
-                if expected.iter().all(|token| file.identifiers.contains(token)) {
+                let strict_match = expected.iter().all(|token| file.identifiers.contains(token));
+                let member_fallback = member_only_fallback_match(change, &file.identifiers);
+                if strict_match || member_fallback {
+                    let evidence = if strict_match {
+                        expected.into_iter().collect::<Vec<_>>().join(", ")
+                    } else {
+                        let member = member_name_from_details(&change.details)
+                            .unwrap_or_else(|| "<unknown_member>".to_string());
+                        format!("member_only_fallback:{member}")
+                    };
                     hits.push(IosUsageHit {
                         file: file.path.clone(),
                         symbol: change.symbol.clone(),
                         kind: change.kind.clone(),
-                        evidence: expected.into_iter().collect::<Vec<_>>().join(", "),
+                        evidence,
                         already_touched: file.already_touched,
                     });
                 }
@@ -230,6 +239,16 @@ fn expected_tokens_for_change(change: &ApiChange) -> BTreeSet<String> {
         out.insert(member);
     }
     out
+}
+
+fn member_only_fallback_match(change: &ApiChange, identifiers: &HashSet<String>) -> bool {
+    if change.kind != "member" {
+        return false;
+    }
+    let Some(member) = member_name_from_details(&change.details) else {
+        return false;
+    };
+    identifiers.contains(&member)
 }
 
 fn contains_shared_import(contents: &str, shared_sdk_name: &str) -> bool {
@@ -462,5 +481,43 @@ mod tests {
         assert_eq!(report.touched_hits, 0);
         assert_eq!(report.untouched_hits, 1);
         assert!(!report.hits[0].already_touched);
+    }
+
+    #[test]
+    fn finds_interface_member_usage_via_implementation_object() {
+        let repo = mk_temp_repo();
+        let swift_rel = "ios/TracerUsage.swift";
+        write_file(
+            &repo,
+            swift_rel,
+            r#"
+            import SharedSdk
+
+            func run() {
+                TracerImpl.shared.trace()
+            }
+            "#,
+        );
+
+        let changes = vec![ApiChange {
+            symbol: "Tracer".to_string(),
+            kind: "member".to_string(),
+            file: Some("shared/somemodule/src/commonMain/kotlin/Tracer.kt".to_string()),
+            details: "changed `trace`".to_string(),
+        }];
+
+        let report = find_ios_usages(
+            &changes,
+            &repo,
+            &[swift_rel.to_string()],
+            "SharedSdk",
+            &HashSet::new(),
+        )
+        .expect("ios usage search should succeed");
+
+        assert_eq!(report.hits.len(), 1);
+        assert_eq!(report.hits[0].symbol, "Tracer");
+        assert_eq!(report.hits[0].kind, "member");
+        assert!(report.hits[0].evidence.contains("trace"));
     }
 }

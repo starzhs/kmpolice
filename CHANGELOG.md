@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.11
+
+### Summary
+- Improved Swift call-site detection for interface member changes used via implementation objects.
+- Added MR debug output block for Kotlin changed files and per-file API delta visibility.
+
+### Changes
+- Added `member` fallback matching in Swift usage search:
+  - if strict owner+member token match misses,
+  - allow member-name-only match for interface-member scenarios (e.g. `TracerImpl.shared.trace()`).
+- Added explicit evidence marker for fallback matches: `member_only_fallback:<member>`.
+- Added test coverage for interface-member usage via implementation object.
+- Added MR debug section in verbose output:
+  - list of `kotlin_changed_paths`
+  - per-path `before/after` presence in snapshots
+  - per-file `api_changes` count
+
 ## 0.1.10
 
 ### Summary

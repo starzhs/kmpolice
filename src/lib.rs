@@ -14,7 +14,7 @@ use clap::Parser;
 
 use cli::{Cli, OutputFormat};
 use config::Config;
-use mr::{render_ios_usage_report, render_verbose_changes, run_mr};
+use mr::{render_ios_usage_report, render_mr_debug, render_verbose_changes, run_mr};
 use report::{render_json, render_text};
 
 pub fn run() -> Result<i32> {
@@ -43,6 +43,8 @@ pub fn run() -> Result<i32> {
         output.push_str(&render_verbose_changes(&result.api_changes));
         output.push_str("\n\n");
         output.push_str(&render_ios_usage_report(&result.ios_usage));
+        output.push_str("\n\n");
+        output.push_str(&render_mr_debug(&result.debug, &result.api_changes));
     }
 
     println!("{output}");

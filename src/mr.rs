@@ -29,6 +29,21 @@ pub struct MrResult {
     pub diagnostics: Vec<Diagnostic>,
     pub api_changes: Vec<ApiChange>,
     pub ios_usage: IosUsageReport,
+    pub debug: MrDebugInfo,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MrDebugInfo {
+    pub kotlin_changed_paths: Vec<String>,
+    pub kotlin_file_stats: Vec<KotlinFileDebugStat>,
+}
+
+#[derive(Debug, Clone)]
+pub struct KotlinFileDebugStat {
+    pub path: String,
+    pub before_present: bool,
+    pub after_present: bool,
+    pub api_change_count: usize,
 }
 
 pub fn run_mr(
@@ -71,7 +86,45 @@ pub fn run_mr(
         diagnostics,
         api_changes,
         ios_usage,
+        debug: build_debug_info(&kotlin_changed, &base_snapshot, &head_snapshot),
     })
+}
+
+fn build_debug_info(
+    kotlin_changed: &HashSet<String>,
+    base_snapshot: &ProjectSnapshot,
+    head_snapshot: &ProjectSnapshot,
+) -> MrDebugInfo {
+    let mut changed_paths: Vec<String> = kotlin_changed.iter().cloned().collect();
+    changed_paths.sort();
+    let changed_set: HashSet<&str> = kotlin_changed.iter().map(String::as_str).collect();
+    let before_set: HashSet<&str> = base_snapshot
+        .kotlin_files
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
+    let after_set: HashSet<&str> = head_snapshot
+        .kotlin_files
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
+    let mut stats = Vec::with_capacity(changed_paths.len());
+    for path in &changed_paths {
+        let path_ref = path.as_str();
+        if !changed_set.contains(path_ref) {
+            continue;
+        }
+        stats.push(KotlinFileDebugStat {
+            path: path.clone(),
+            before_present: before_set.contains(path_ref),
+            after_present: after_set.contains(path_ref),
+            api_change_count: 0,
+        });
+    }
+    MrDebugInfo {
+        kotlin_changed_paths: changed_paths,
+        kotlin_file_stats: stats,
+    }
 }
 
 fn build_ios_impact_diagnostics(
@@ -417,6 +470,34 @@ pub fn render_ios_usage_report(report: &IosUsageReport) -> String {
             } else {
                 "untouched"
             }
+        ));
+    }
+    out
+}
+
+pub fn render_mr_debug(debug: &MrDebugInfo, api_changes: &[ApiChange]) -> String {
+    let mut by_file: HashMap<&str, usize> = HashMap::new();
+    for change in api_changes {
+        if let Some(file) = &change.file {
+            *by_file.entry(file.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str("MR debug:");
+    out.push_str(&format!(
+        "\n- kotlin changed paths: {}",
+        debug.kotlin_changed_paths.len()
+    ));
+    for path in &debug.kotlin_changed_paths {
+        out.push_str(&format!("\n  - {}", path));
+    }
+    out.push_str("\n- kotlin file stats:");
+    for stat in &debug.kotlin_file_stats {
+        let api_change_count = by_file.get(stat.path.as_str()).copied().unwrap_or(0);
+        out.push_str(&format!(
+            "\n  - {} | before={} after={} api_changes={}",
+            stat.path, stat.before_present, stat.after_present, api_change_count
         ));
     }
     out
