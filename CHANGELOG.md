@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.13
+
+### Summary
+- Fixed MR API-change extraction for top-level Kotlin functions and public class constructors.
+- Fixed false negative where public class detection was broken by private members in class body.
+
+### Changes
+- Reworked top-level function signature extraction to AST-based form:
+  - function name
+  - parameter labels
+  - return type
+- Reworked constructor parameter label extraction to AST nodes (`class_parameter`, `parameter`, `parameter_with_optional_type`) instead of text splitting.
+- Updated public-visibility detection to use declaration prefix up to the declaration name (not full node text), preventing `private` members inside class body from hiding public class constructor changes.
+- Added MR unit tests for:
+  - `iosMain` top-level function signature changes (`CustomViewController(...)`)
+  - constructor signature changes (`SomeClass(name: String)`)
+
 ## 0.1.12
 
 ### Summary

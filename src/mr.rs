@@ -751,13 +751,9 @@ fn collect_top_level_callable(
     let Some(name) = node_text(name_node, source) else {
         return;
     };
-    let signature = node_text(node, source)
-        .map(str::trim)
-        .unwrap_or(kind)
-        .lines()
-        .next()
-        .unwrap_or(kind)
-        .to_string();
+    let labels = parameter_labels_from_node(node, source);
+    let return_type = kotlin_return_type_for_first_class(node, source).unwrap_or("Unit".to_string());
+    let signature = format!("{kind} {}({}) -> {return_type}", name, labels.join(","));
     symbols.top_level_members.insert(name.to_string(), signature);
 }
 
@@ -774,13 +770,18 @@ fn collect_top_level_property(node: Node<'_>, source: &str, symbols: &mut FirstC
     let Some(name) = node_text(name_node, source) else {
         return;
     };
-    let signature = node_text(node, source)
-        .map(str::trim)
-        .unwrap_or("val")
-        .lines()
-        .next()
-        .unwrap_or("val")
-        .to_string();
+    let mutable = node_text(node, source)
+        .is_some_and(|text| text.contains("var ") || text.trim_start().starts_with("var "));
+    let property_type = first_type_like_child(node)
+        .and_then(|type_node| node_text(type_node, source))
+        .map(clean_type)
+        .unwrap_or_else(|| "Any".to_string());
+    let signature = format!(
+        "{} {}: {}",
+        if mutable { "var" } else { "val" },
+        name,
+        property_type
+    );
     symbols.top_level_members.insert(name.to_string(), signature);
 }
 
@@ -817,7 +818,7 @@ fn collect_constructors(
     let mut overloads = BTreeSet::new();
     let mut cursor = class_node.walk();
     for child in class_node.named_children(&mut cursor) {
-        if child.kind() == "primary_constructor" || child.kind() == "class_parameter_list" {
+        if child.kind() == "primary_constructor" {
             let labels = parameter_labels_from_node(child, source);
             overloads.insert(labels.join(","));
         }
@@ -934,29 +935,92 @@ fn collect_enum_sealed_cases(
 }
 
 fn parameter_labels_from_node(node: Node<'_>, source: &str) -> Vec<String> {
-    let text = node_text(node, source).unwrap_or_default();
-    text.split(',')
-        .filter_map(|raw| {
-            let clean = raw.trim().trim_start_matches('(').trim_end_matches(')');
-            if clean.is_empty() {
-                return None;
+    let mut parameters: Vec<(usize, String)> = Vec::new();
+    for kind in ["class_parameter", "parameter", "parameter_with_optional_type"] {
+        for param in descendants_by_kind(node, kind) {
+            let Some(name_node) = first_named_child_of_kind(param, "simple_identifier") else {
+                continue;
+            };
+            let Some(name) = node_text(name_node, source).map(str::trim) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
             }
-            let before_colon = clean.split(':').next().unwrap_or(clean).trim();
-            let name = before_colon
-                .split_whitespace()
-                .last()
-                .unwrap_or(before_colon)
-                .to_string();
-            if name.is_empty() { None } else { Some(name) }
-        })
-        .collect()
+            parameters.push((name_node.start_byte(), name.to_string()));
+        }
+    }
+
+    parameters.sort_by_key(|(start, _)| *start);
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, name) in parameters {
+        if seen.insert(name.clone()) {
+            out.push(name);
+        }
+    }
+    out
 }
 
 fn is_public_like(node: Node<'_>, source: &str) -> bool {
-    let text = node_text(node, source).unwrap_or_default();
-    !text.contains("private ")
-        && !text.contains("internal ")
-        && !text.contains("protected ")
+    let Some(name_node) = declaration_name_node(node) else {
+        return true;
+    };
+    let prefix = source
+        .get(node.start_byte()..name_node.start_byte())
+        .unwrap_or_default();
+    !prefix.contains("private ") && !prefix.contains("internal ") && !prefix.contains("protected ")
+}
+
+fn declaration_name_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    match node.kind() {
+        "function_declaration" => first_named_child_of_kind(node, "simple_identifier"),
+        "class_declaration" | "object_declaration" | "type_alias" => {
+            first_named_child_of_kind(node, "type_identifier")
+        }
+        "property_declaration" => {
+            let var_node = first_named_child_of_kind(node, "variable_declaration")?;
+            first_named_child_of_kind(var_node, "simple_identifier")
+        }
+        _ => first_named_child_of_kind(node, "simple_identifier")
+            .or_else(|| first_named_child_of_kind(node, "type_identifier")),
+    }
+}
+
+fn first_type_like_child<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|child| is_type_like(child.kind()))
+}
+
+fn is_type_like(kind: &str) -> bool {
+    matches!(
+        kind,
+        "user_type"
+            | "nullable_type"
+            | "not_nullable_type"
+            | "type_identifier"
+            | "function_type"
+            | "parenthesized_type"
+    )
+}
+
+fn clean_type(raw: &str) -> String {
+    raw.split_whitespace().collect::<String>()
+}
+
+fn kotlin_return_type_for_first_class(node: Node<'_>, source: &str) -> Option<String> {
+    let mut last_type = None;
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "function_body" {
+            break;
+        }
+        if is_type_like(child.kind()) {
+            last_type = node_text(child, source).map(clean_type);
+        }
+    }
+    last_type
 }
 
 fn first_named_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
@@ -981,4 +1045,70 @@ fn descendants_by_kind<'a>(node: Node<'a>, kind: &str) -> Vec<Node<'a>> {
 
 fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
     source.get(node.start_byte()..node.end_byte())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diff_first_class_symbols;
+    use crate::model::SourceFile;
+
+    fn sf(path: &str, contents: &str) -> SourceFile {
+        SourceFile {
+            path: path.to_string(),
+            contents: contents.to_string(),
+            snapshot: None,
+        }
+    }
+
+    #[test]
+    fn detects_top_level_iosmain_function_signature_change() {
+        let before = sf(
+            "shared/src/iosMain/kotlin/main.kt",
+            r#"
+            public fun CustomViewController(onClose: () -> Unit): UIViewController {
+                return ComposeUIViewController { CustomViewController(onClose) }
+            }
+            "#,
+        );
+        let after = sf(
+            "shared/src/iosMain/kotlin/main.kt",
+            r#"
+            public fun CustomViewController(onClose: () -> Unit, title: String): UIViewController {
+                return ComposeUIViewController { CustomViewController(onClose, title) }
+            }
+            "#,
+        );
+
+        let changes = diff_first_class_symbols(Some(&before), Some(&after), &before.path);
+        assert!(
+            changes.iter().any(|c| c.kind == "top_level" && c.symbol == "CustomViewController"),
+            "expected top_level change for CustomViewController, got: {changes:#?}"
+        );
+    }
+
+    #[test]
+    fn detects_constructor_change_even_with_private_members_in_body() {
+        let before = sf(
+            "shared/src/commonMain/kotlin/SomeClass.kt",
+            r#"
+            public class SomeClass : SomeInterface {
+                private val secret = 1
+            }
+            "#,
+        );
+        let after = sf(
+            "shared/src/commonMain/kotlin/SomeClass.kt",
+            r#"
+            public class SomeClass(public val name: String) : SomeInterface {
+                private val secret = 1
+            }
+            "#,
+        );
+
+        let changes = diff_first_class_symbols(Some(&before), Some(&after), &before.path);
+        assert!(
+            changes.iter().any(|c| c.kind == "constructor" && c.symbol == "SomeClass"),
+            "expected constructor change for SomeClass, got: {changes:#?}"
+        );
+    }
 }
