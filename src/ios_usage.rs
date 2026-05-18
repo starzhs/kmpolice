@@ -252,11 +252,27 @@ fn member_only_fallback_match(change: &ApiChange, identifiers: &HashSet<String>)
 }
 
 fn contains_shared_import(contents: &str, shared_sdk_name: &str) -> bool {
-    let exact = format!("import {shared_sdk_name}");
-    let dotted = format!("import {shared_sdk_name}.");
     contents.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed == exact || trimmed.starts_with(&dotted)
+        let mut parts = line.split_whitespace().peekable();
+        while let Some(token) = parts.peek().copied() {
+            if token.starts_with('@') {
+                parts.next();
+                continue;
+            }
+            break;
+        }
+
+        let Some(keyword) = parts.next() else {
+            return false;
+        };
+        if keyword != "import" {
+            return false;
+        }
+
+        let Some(module_token) = parts.next() else {
+            return false;
+        };
+        module_token == shared_sdk_name || module_token.starts_with(&format!("{shared_sdk_name}."))
     })
 }
 
@@ -519,5 +535,88 @@ mod tests {
         assert_eq!(report.hits[0].symbol, "Tracer");
         assert_eq!(report.hits[0].kind, "member");
         assert!(report.hits[0].evidence.contains("trace"));
+    }
+
+    #[test]
+    fn finds_interface_member_usage_via_protocol_typed_field() {
+        let repo = mk_temp_repo();
+        let swift_rel = "ios/TracerConsumer.swift";
+        write_file(
+            &repo,
+            swift_rel,
+            r#"
+            import SharedSdk
+
+            final class Consumer {
+                private let tracer: Tracer
+
+                init(tracer: Tracer) {
+                    self.tracer = tracer
+                }
+
+                func run() {
+                    tracer.trace()
+                }
+            }
+            "#,
+        );
+
+        let changes = vec![ApiChange {
+            symbol: "com.example.tracing.Tracer".to_string(),
+            kind: "member".to_string(),
+            file: Some("shared/src/commonMain/kotlin/Tracer.kt".to_string()),
+            details: "changed `trace`".to_string(),
+        }];
+
+        let report = find_ios_usages(
+            &changes,
+            &repo,
+            &[swift_rel.to_string()],
+            "SharedSdk",
+            &HashSet::new(),
+        )
+        .expect("ios usage search should succeed");
+
+        assert_eq!(report.hits.len(), 1);
+        assert_eq!(report.hits[0].symbol, "com.example.tracing.Tracer");
+        assert_eq!(report.hits[0].kind, "member");
+        assert!(report.hits[0].evidence.contains("Tracer"));
+        assert!(report.hits[0].evidence.contains("trace"));
+    }
+
+    #[test]
+    fn supports_testable_import_for_shared_sdk() {
+        let repo = mk_temp_repo();
+        let swift_rel = "ios/TestableImport.swift";
+        write_file(
+            &repo,
+            swift_rel,
+            r#"
+            @testable import SharedSdk
+
+            func run(tracer: Tracer) {
+                tracer.trace()
+            }
+            "#,
+        );
+
+        let changes = vec![ApiChange {
+            symbol: "Tracer".to_string(),
+            kind: "member".to_string(),
+            file: Some("shared/src/commonMain/kotlin/Tracer.kt".to_string()),
+            details: "changed `trace`".to_string(),
+        }];
+
+        let report = find_ios_usages(
+            &changes,
+            &repo,
+            &[swift_rel.to_string()],
+            "SharedSdk",
+            &HashSet::new(),
+        )
+        .expect("ios usage search should succeed");
+
+        assert_eq!(report.hits.len(), 1);
+        assert_eq!(report.hits[0].kind, "member");
     }
 }

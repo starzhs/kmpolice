@@ -11,6 +11,7 @@ pub enum OutputFormat {
 #[derive(Debug, Parser)]
 #[command(name = "kmpolice")]
 #[command(about = "Checks Kotlin KMP interfaces against iOS Swift contracts")]
+#[command(version)]
 pub struct Cli {
     #[arg(long)]
     pub config: Option<PathBuf>,

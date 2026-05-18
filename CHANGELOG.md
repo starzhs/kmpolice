@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.12
+
+### Summary
+- Improved Swift shared-sdk import detection in iOS usage scan.
+- Added explicit CLI version support in help/output.
+- Added coverage for protocol-typed field call-sites (`tracer: Tracer` + `tracer.trace()`).
+
+### Changes
+- `contains_shared_import` now supports attribute-prefixed import forms, including:
+  - `@testable import <SharedSdk>`
+  - `@preconcurrency import <SharedSdk>`
+- Added `ios_usage` tests for:
+  - protocol-typed field member call detection (`tracer.trace()`)
+  - attribute-prefixed import support
+- Enabled clap version metadata on CLI parser so `--version` is available.
+
 ## 0.1.11
 
 ### Summary
