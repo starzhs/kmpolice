@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.15
+
+### Summary
+- MR iOS impact diagnostics are now informational for Swift files already touched in the current MR.
+
+### Changes
+- In MR impact diagnostic assembly (`mr_*_ios_impact`):
+  - `already_touched` Swift hits are emitted with `Info` severity.
+  - `untouched` Swift hits keep configured severity from `config.severity_for(code)`.
+- Added tests to lock behavior:
+  - touched hit -> `Info`
+  - untouched hit -> configured severity (`Error` by default)
+
 ## 0.1.14
 
 ### Summary

@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use tree_sitter::{Node, Parser};
 
 use crate::analyzer::{compare_project, introduced_diagnostics};
-use crate::config::Config;
+use crate::config::{Config, Severity};
 use crate::git::{git_changed_files_between, git_changed_files_worktree, merge_base};
 use crate::ios_usage::{find_ios_usages, IosUsageReport};
 use crate::model::{
@@ -149,9 +149,14 @@ fn build_ios_impact_diagnostics(
             continue;
         }
         let code = impact_code_for_kind(&hit.kind);
+        let severity = if hit.already_touched {
+            Severity::Info
+        } else {
+            config.severity_for(code)
+        };
         out.push(Diagnostic {
             code: code.to_string(),
-            severity: config.severity_for(code),
+            severity,
             message: format!(
                 "Kotlin API change `{}` for `{}` is used in iOS file `{}`",
                 hit.kind, hit.symbol, hit.file
@@ -1049,7 +1054,9 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::diff_first_class_symbols;
+    use super::{build_ios_impact_diagnostics, diff_first_class_symbols, ApiChange};
+    use crate::config::{Config, Severity};
+    use crate::ios_usage::{IosUsageHit, IosUsageReport};
     use crate::model::SourceFile;
 
     fn sf(path: &str, contents: &str) -> SourceFile {
@@ -1110,5 +1117,63 @@ mod tests {
             changes.iter().any(|c| c.kind == "constructor" && c.symbol == "SomeClass"),
             "expected constructor change for SomeClass, got: {changes:#?}"
         );
+    }
+
+    #[test]
+    fn marks_ios_impact_as_info_for_already_touched_swift_file() {
+        let config = Config::default();
+        let api_changes = vec![ApiChange {
+            symbol: "MainKt".to_string(),
+            kind: "top_level".to_string(),
+            file: Some("shared/src/iosMain/kotlin/main.kt".to_string()),
+            details: "changed `CustomViewController`".to_string(),
+        }];
+        let usage = IosUsageReport {
+            swift_files_total: 1,
+            candidate_files: 1,
+            parsed_files: 1,
+            touched_hits: 1,
+            untouched_hits: 0,
+            hits: vec![IosUsageHit {
+                file: "ios/App.swift".to_string(),
+                symbol: "MainKt".to_string(),
+                kind: "top_level".to_string(),
+                evidence: "MainKt, CustomViewController".to_string(),
+                already_touched: true,
+            }],
+        };
+
+        let diags = build_ios_impact_diagnostics(&api_changes, &usage, &config);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Info);
+    }
+
+    #[test]
+    fn keeps_configured_severity_for_untouched_swift_file() {
+        let config = Config::default();
+        let api_changes = vec![ApiChange {
+            symbol: "MainKt".to_string(),
+            kind: "top_level".to_string(),
+            file: Some("shared/src/iosMain/kotlin/main.kt".to_string()),
+            details: "changed `CustomViewController`".to_string(),
+        }];
+        let usage = IosUsageReport {
+            swift_files_total: 1,
+            candidate_files: 1,
+            parsed_files: 1,
+            touched_hits: 0,
+            untouched_hits: 1,
+            hits: vec![IosUsageHit {
+                file: "ios/App.swift".to_string(),
+                symbol: "MainKt".to_string(),
+                kind: "top_level".to_string(),
+                evidence: "MainKt, CustomViewController".to_string(),
+                already_touched: false,
+            }],
+        };
+
+        let diags = build_ios_impact_diagnostics(&api_changes, &usage, &config);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].severity, Severity::Error);
     }
 }
