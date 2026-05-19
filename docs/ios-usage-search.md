@@ -1,86 +1,76 @@
 # iOS Usage Search Logic
 
-This document describes how `kmpolice` finds iOS usages for Kotlin API changes in MR mode.
+This document describes how `kmpolice` finds Swift usages for Kotlin API changes in MR mode.
 
 ## Entry Point
+
 - `find_ios_usages(api_changes, repo, ios_paths, shared_sdk_name, swift_changed_paths)`
 - Code: `src/ios_usage.rs`
 
-## Data Structures
-- `IosUsageHit { file, symbol, kind, evidence }`
-  - Code: `src/ios_usage.rs:12`
-- `IosUsageReport { candidate_files, parsed_files, hits }`
-  - Code: `src/ios_usage.rs:20`
-- `SearchIndex { tokens }`
-  - Code: `src/ios_usage.rs:102`
-
 ## Pipeline
 
-1. Build token index from Kotlin API changes
-- Function: `build_search_index`
-- Code: `src/ios_usage.rs:107`
-- Sources for tokens:
-  - root type name extracted from symbol (`A.B` -> `A`)
-  - whole symbol if identifier-like
-  - member name parsed from change details (e.g. from backticks)
+1. Build search index from Kotlin API changes.
+2. Enumerate Swift paths.
+3. Read files in parallel.
+4. Keep files that import shared SDK (`import <module>`, `@testable import <module>`, etc.).
+5. Apply token prefilter (fast textual narrowing).
+6. Parse candidate files with Swift tree-sitter in parallel.
+7. Match parsed Swift usage against each Kotlin API change.
+8. Build `IosUsageReport` with touched/untouched stats.
 
-2. Cascade candidate filter over all iOS files
-- Candidate condition:
-  - file contains shared import (`import <shared_sdk_name>` or `import <shared_sdk_name>.*`)
-  - file contains at least one indexed token by word-boundary-like check
-- Code:
-  - `contains_shared_import`: `src/ios_usage.rs:141`
-  - `contains_any_token`: `src/ios_usage.rs:148`
-  - `contains_word`: `src/ios_usage.rs:152`
+## Data Produced per Parsed Swift File
 
-3. Parallel AST parse of candidate files
-- Uses `rayon` with `par_iter`
-- One Swift parser per worker/file
-- Code: `src/ios_usage.rs`
+- `identifiers`: identifier set from AST.
+- `bindings`: variable/property/parameter bindings (`name -> type`).
+- `inheritance`: local type inheritance/conformance graph.
+- `member_calls`: member call sites as `(receiver, member)`.
 
-4. Identifier extraction from Swift AST
-- DFS over named nodes, collect identifier-like texts
-- Code: `collect_identifiers` at `src/ios_usage.rs:179`
+## Matching Strategy
 
-5. Per-change matching against file identifiers
-- For each `ApiChange`, build expected tokens (`expected_tokens_for_change`)
-- Match rule: all expected tokens must exist in file identifiers set
-- Code:
-  - `expected_tokens_for_change`: `src/ios_usage.rs:123`
-  - match check: `src/ios_usage.rs:72`
+### Non-`member` changes
 
-6. Aggregate report
-- `candidate_files`: number of files after prefilter
-- `parsed_files`: number of files successfully parsed
-- `hits`: matched `(file, symbol, kind, evidence)`
-- `touched_hits`/`untouched_hits`: matched files that are already changed vs untouched in MR
-- Code: `src/ios_usage.rs`
+- Uses strict token set matching (`all expected tokens must be present`).
 
-## Progress Reporting
-- Progress is rendered via `indicatif` to `stderr`.
-- Stages:
-  - `Swift enumerate`
-  - `Swift import filter`
-  - `Swift token filter`
-  - `Swift AST parse`
-  - `Swift usage match`
-- Each stage reports counters and dynamic `last file`.
+### `member` changes
 
-## Nested-Type Behavior
-Current behavior for nested symbols is root-driven in index:
-- `root_type_name(symbol)` extracts the first uppercase identifier segment.
-- This is used for coarse candidate narrowing.
-- Code: `src/ios_usage.rs:199`
+Type-aware matching is applied first:
 
-## Current Matching Model (Important)
-- Matching is token-based and AST-identifier-based.
-- It is designed for fast narrowing + practical hits.
-- It is not yet a full semantic call/property/type resolver.
+1. Resolve changed owner type from Kotlin symbol (root type segment).
+2. Resolve changed member name from `ApiChange.details`.
+3. Inspect Swift member calls.
+4. Resolve receiver type from bindings.
+5. Match only if:
+   - receiver type equals owner type, or
+   - receiver type is a subtype/conforming type of owner (via local inheritance graph).
 
-## Output Integration
-- MR runner calls usage search after collecting `api_changes`.
-- `MrResult` carries `ios_usage` report.
-- Text verbose renderer prints usage summary and hits.
-- Code references:
-  - `src/mr.rs` (call site in `run_mr`)
-  - `src/lib.rs` (verbose output wiring)
+If receiver type cannot be resolved from local AST context, fallback to token-based matching is allowed.
+
+## Import Filter Rules
+
+The shared SDK import check supports attribute-prefixed import forms, including:
+
+- `import SharedSdk`
+- `@testable import SharedSdk`
+- `@preconcurrency import SharedSdk`
+
+## Output
+
+- `IosUsageHit { file, symbol, kind, evidence, already_touched }`
+- `IosUsageReport { swift_files_total, candidate_files, parsed_files, touched_hits, untouched_hits, hits }`
+
+Evidence examples:
+
+- `type_aware_call:child:ChildType -> trace`
+- `member_only_fallback:trace`
+
+## Progress Stages
+
+Rendered with `indicatif`:
+
+- `Swift enumerate`
+- `Swift import filter`
+- `Swift token filter`
+- `Swift AST parse`
+- `Swift usage match`
+
+Each stage reports processed/total and the last processed file.

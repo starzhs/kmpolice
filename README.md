@@ -41,6 +41,35 @@ Arguments:
 - `mr_member_ios_impact`
 - `mr_type_ios_impact`
 
+## Kotlin API Change Categories Detected
+
+`kmpolice` currently detects these Kotlin API change categories in `commonMain` and `iosMain`, and then searches their impact in Swift:
+
+- `type`: a public type (`class`/`interface`) was added or removed.
+- `member`: a public type member (method/property) was added, removed, or changed.
+- `constructor`: a public class constructor signature changed (parameter set, names, overloads).
+- `enum_sealed`: enum/sealed case set changed.
+- `top_level`: top-level `fun` / `val` / `var` changed.
+- `companion`: `companion object` API changed.
+- `typealias`: `typealias` was added, removed, or changed.
+
+## Member Matching in Swift (Type-aware)
+
+For `member` changes, Swift call-site matching is strict and type-aware:
+
+- It extracts receiver bindings (`name -> type`) from Swift AST.
+- It builds local Swift inheritance/conformance relations from AST.
+- It matches member calls only when receiver type is:
+  - the owner type itself, or
+  - a subtype/conforming type of the owner.
+
+Example covered by strict matching:
+- Kotlin: `Tracer.trace()` changed on parent/protocol.
+- Swift: `child.trace()` where `child` is typed as a conforming/subtype.
+
+Fallback behavior:
+- If receiver type cannot be resolved from local AST context, token-based fallback is still used to avoid dropping valid hits in unresolved cross-file/module scenarios.
+
 Exit code:
 - `0` when no diagnostics
 - `1` when diagnostics exist

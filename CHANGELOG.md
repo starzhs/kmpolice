@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.14
+
+### Summary
+- Added strict type-aware Swift member matching for MR iOS impact detection.
+- Improved `member` usage reliability for inheritance/conformance call-sites.
+- Synchronized README and architecture docs with current MR behavior.
+
+### Changes
+- `member` matching in Swift usage search now performs AST-based receiver type resolution:
+  - extracts Swift bindings (`name -> type`) from parameters and properties,
+  - builds local inheritance/conformance graph from Swift declarations,
+  - matches member calls when receiver type equals owner type or is a subtype/conforming type.
+- Keeps fallback behavior for unresolved receiver types to avoid dropping valid cross-file/module hits.
+- Added `ios_usage` tests for strict member matching:
+  - subtype/conformance positive case,
+  - unrelated-type negative case.
+- Updated docs:
+  - `README.md`
+  - `docs/ios-usage-search.md`
+  - `docs/mr-process-report.md`
+  - `docs/mr-diagnostics-algorithm.md`
+  - `docs/swift-scan-feature-plan.md`
+
 ## 0.1.13
 
 ### Summary

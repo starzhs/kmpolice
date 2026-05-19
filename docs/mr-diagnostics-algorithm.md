@@ -17,8 +17,8 @@ This document defines how diagnostics are produced in MR mode from Kotlin API ch
 - Produced by Kotlin diff pipeline (`api_changes`) in MR run.
 
 3. iOS usage report
-- `find_ios_usages(api_changes, ios_files)`
-- Code: `src/mr.rs:52`, implementation in `src/ios_usage.rs:27`
+- `find_ios_usages(api_changes, repo, ios_paths, shared_sdk_name, swift_changed_paths)`
+- Code: `src/mr.rs`, implementation in `src/ios_usage.rs`
 
 ## Diagnostic Assembly Pipeline
 
@@ -35,8 +35,15 @@ This document defines how diagnostics are produced in MR mode from Kotlin API ch
   - emit a diagnostic with:
     - code by change kind
     - message: Kotlin change + iOS file
-    - hint: change details + matched tokens + Swift file touched/untouched status
+    - hint: change details + match evidence + Swift file touched/untouched status
     - evidence: `mr_mode:diff_aware`, `kotlin_change_detected`, `ios_usage_index_hit`
+
+Member-specific matching behavior:
+- `member` hits are matched with a strict type-aware pass first:
+  - receiver type binding from Swift AST
+  - local inheritance/conformance graph
+  - member call extraction
+- token fallback is used when receiver type cannot be resolved.
 
 3. Final diagnostics list
 - `introduced_diagnostics` + `mr_*_ios_impact` additions.

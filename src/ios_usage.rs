@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -118,12 +118,17 @@ pub fn find_ios_usages(
                 stage_ast.inc(1);
                 return None;
             };
-            let identifiers = collect_identifiers(tree.root_node(), &file.contents);
+            let root = tree.root_node();
+            let identifiers = collect_identifiers(root, &file.contents);
+            let (bindings, inheritance, member_calls) = collect_swift_semantics(root, &file.contents);
             stage_ast.set_message(format!("Swift AST parse | last file: {}", file.path));
             stage_ast.inc(1);
             Some(ParsedSwiftFile {
                 path: file.path.clone(),
                 identifiers,
+                bindings,
+                inheritance,
+                member_calls,
                 already_touched: file.already_touched,
             })
         })
@@ -142,11 +147,23 @@ pub fn find_ios_usages(
                 if expected.is_empty() {
                     continue;
                 }
-                let strict_match = expected.iter().all(|token| file.identifiers.contains(token));
+                let strict_outcome = if change.kind == "member" {
+                    strict_member_type_aware_match(change, file)
+                } else {
+                    None
+                };
+                let strict_match = strict_outcome
+                    .unwrap_or_else(|| expected.iter().all(|token| file.identifiers.contains(token)));
                 let member_fallback = member_only_fallback_match(change, &file.identifiers);
-                if strict_match || member_fallback {
+                let allow_fallback = change.kind != "member" || strict_outcome.is_none();
+                if strict_match || (allow_fallback && member_fallback) {
                     let evidence = if strict_match {
-                        expected.into_iter().collect::<Vec<_>>().join(", ")
+                        if change.kind == "member" {
+                            strict_member_evidence(change, file)
+                                .unwrap_or_else(|| expected.into_iter().collect::<Vec<_>>().join(", "))
+                        } else {
+                            expected.into_iter().collect::<Vec<_>>().join(", ")
+                        }
                     } else {
                         let member = member_name_from_details(&change.details)
                             .unwrap_or_else(|| "<unknown_member>".to_string());
@@ -199,7 +216,16 @@ struct CandidateFile {
 struct ParsedSwiftFile {
     path: String,
     identifiers: HashSet<String>,
+    bindings: HashMap<String, String>,
+    inheritance: HashMap<String, HashSet<String>>,
+    member_calls: Vec<MemberCall>,
     already_touched: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MemberCall {
+    receiver: String,
+    member: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -325,6 +351,306 @@ fn collect_identifiers(root: Node<'_>, source: &str) -> HashSet<String> {
         }
     }
     out
+}
+
+fn collect_swift_semantics(
+    root: Node<'_>,
+    source: &str,
+) -> (HashMap<String, String>, HashMap<String, HashSet<String>>, Vec<MemberCall>) {
+    let mut bindings = HashMap::new();
+    let mut inheritance = HashMap::<String, HashSet<String>>::new();
+    let mut member_calls = Vec::new();
+    let mut stack = vec![root];
+
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            "parameter" => collect_parameter_binding(node, source, &mut bindings),
+            "property_declaration" => collect_property_binding(node, source, &mut bindings),
+            "class_declaration" | "protocol_declaration" | "struct_declaration" => {
+                collect_decl_inheritance(node, source, &mut inheritance)
+            }
+            "call_expression" => collect_member_call(node, source, &mut member_calls),
+            _ => {}
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    (bindings, inheritance, member_calls)
+}
+
+fn collect_parameter_binding(node: Node<'_>, source: &str, out: &mut HashMap<String, String>) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let Some(type_node) = node.child_by_field_name("type") else {
+        return;
+    };
+    let Some(name_text) = node_text(name_node, source) else {
+        return;
+    };
+    let Some(name) = last_identifier_segment(name_text) else {
+        return;
+    };
+    let Some(type_text) = node_text(type_node, source) else {
+        return;
+    };
+    let Some(type_name) = canonical_type_name(type_text) else {
+        return;
+    };
+    out.insert(name, type_name);
+}
+
+fn collect_property_binding(node: Node<'_>, source: &str, out: &mut HashMap<String, String>) {
+    let Some(pattern) = node.child_by_field_name("name") else {
+        return;
+    };
+    let Some(type_node) = first_direct_named_child_of_kind(node, "type_annotation") else {
+        return;
+    };
+    let name_node = pattern
+        .child_by_field_name("bound_identifier")
+        .or_else(|| pattern.child_by_field_name("name"))
+        .unwrap_or(pattern);
+    let Some(name_text) = node_text(name_node, source) else {
+        return;
+    };
+    let Some(name) = last_identifier_segment(name_text) else {
+        return;
+    };
+    let Some(type_text) = node_text(type_node, source) else {
+        return;
+    };
+    let Some(type_name) = canonical_type_name(type_text) else {
+        return;
+    };
+    out.insert(name, type_name);
+}
+
+fn collect_decl_inheritance(
+    node: Node<'_>,
+    source: &str,
+    out: &mut HashMap<String, HashSet<String>>,
+) {
+    let Some(name_node) = node.child_by_field_name("name") else {
+        return;
+    };
+    let Some(raw_name) = node_text(name_node, source) else {
+        return;
+    };
+    let Some(name) = canonical_type_name(raw_name) else {
+        return;
+    };
+
+    let mut direct = HashSet::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "inheritance_specifier" {
+            continue;
+        }
+        if let Some(text) = node_text(child, source) {
+            let raw = text.trim().trim_start_matches(':');
+            for entry in raw.split(',') {
+                if let Some(parent) = canonical_type_name(entry) {
+                    direct.insert(parent);
+                }
+            }
+        }
+    }
+    if !direct.is_empty() {
+        out.entry(name).or_default().extend(direct);
+    }
+}
+
+fn collect_member_call(node: Node<'_>, source: &str, out: &mut Vec<MemberCall>) {
+    let mut call_suffix = None;
+    let mut target_expr = None;
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_suffix" {
+            call_suffix = Some(child);
+        } else if target_expr.is_none() {
+            target_expr = Some(child);
+        }
+    }
+    let Some(_suffix) = call_suffix else {
+        return;
+    };
+    let Some(target) = target_expr else {
+        return;
+    };
+    if target.kind() != "navigation_expression" {
+        return;
+    }
+
+    let Some(nav_suffix) = target.child_by_field_name("suffix") else {
+        return;
+    };
+    let Some(member_node) = nav_suffix.child_by_field_name("suffix") else {
+        return;
+    };
+    let Some(member_text) = node_text(member_node, source) else {
+        return;
+    };
+    let Some(member) = last_identifier_segment(member_text) else {
+        return;
+    };
+
+    let receiver_node = target
+        .child_by_field_name("target")
+        .or_else(|| {
+            let mut target_cursor = target.walk();
+            target.named_children(&mut target_cursor).next()
+        });
+    let Some(receiver_node) = receiver_node else {
+        return;
+    };
+    let Some(receiver_text) = node_text(receiver_node, source) else {
+        return;
+    };
+    let Some(receiver) = last_identifier_segment(receiver_text) else {
+        return;
+    };
+
+    out.push(MemberCall { receiver, member });
+}
+
+fn strict_member_type_aware_match(change: &ApiChange, file: &ParsedSwiftFile) -> Option<bool> {
+    if change.kind != "member" {
+        return None;
+    }
+    let owner = root_type_name(&change.symbol)?;
+    let member = member_name_from_details(&change.details)?;
+
+    let mut has_relevant_calls = false;
+    let mut has_resolved_receiver_type = false;
+    for call in &file.member_calls {
+        if call.member != member {
+            continue;
+        }
+        has_relevant_calls = true;
+        let Some(receiver_type) = resolve_receiver_type(&call.receiver, &file.bindings) else {
+            continue;
+        };
+        has_resolved_receiver_type = true;
+        if receiver_type == owner || is_subtype_of(&receiver_type, &owner, &file.inheritance) {
+            return Some(true);
+        }
+    }
+    if !has_relevant_calls {
+        return None;
+    }
+    if !has_resolved_receiver_type {
+        return None;
+    }
+    Some(false)
+}
+
+fn strict_member_evidence(change: &ApiChange, file: &ParsedSwiftFile) -> Option<String> {
+    if change.kind != "member" {
+        return None;
+    }
+    let owner = root_type_name(&change.symbol)?;
+    let member = member_name_from_details(&change.details)?;
+
+    for call in &file.member_calls {
+        if call.member != member {
+            continue;
+        }
+        let Some(receiver_type) = resolve_receiver_type(&call.receiver, &file.bindings) else {
+            continue;
+        };
+        if receiver_type == owner || is_subtype_of(&receiver_type, &owner, &file.inheritance) {
+            return Some(format!(
+                "type_aware_call:{}:{} -> {}",
+                call.receiver, receiver_type, call.member
+            ));
+        }
+    }
+    None
+}
+
+fn resolve_receiver_type(receiver: &str, bindings: &HashMap<String, String>) -> Option<String> {
+    if let Some(found) = bindings.get(receiver) {
+        return Some(found.clone());
+    }
+    let short = receiver.strip_prefix("self.").unwrap_or(receiver);
+    bindings.get(short).cloned()
+}
+
+fn is_subtype_of(
+    child: &str,
+    parent: &str,
+    inheritance: &HashMap<String, HashSet<String>>,
+) -> bool {
+    if child == parent {
+        return true;
+    }
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::new();
+    queue.push_back(child.to_string());
+    seen.insert(child.to_string());
+
+    while let Some(current) = queue.pop_front() {
+        let Some(parents) = inheritance.get(&current) else {
+            continue;
+        };
+        for item in parents {
+            if item == parent {
+                return true;
+            }
+            if seen.insert(item.clone()) {
+                queue.push_back(item.clone());
+            }
+        }
+    }
+    false
+}
+
+fn first_direct_named_child_of_kind<'tree>(
+    node: Node<'tree>,
+    kind: &str,
+) -> Option<Node<'tree>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).find(|child| child.kind() == kind)
+}
+
+fn canonical_type_name(raw: &str) -> Option<String> {
+    let mut text = raw.trim().trim_start_matches(':').trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    text = text.split_whitespace().collect::<String>();
+    if let Some(stripped) = text.strip_prefix("some") {
+        text = stripped.to_string();
+    } else if let Some(stripped) = text.strip_prefix("any") {
+        text = stripped.to_string();
+    }
+    let mut text = text.trim().trim_end_matches('?').trim_end_matches('!').to_string();
+    if let Some((head, _)) = text.split_once('<') {
+        text = head.to_string();
+    }
+    if let Some(last) = text.rsplit('.').next() {
+        let candidate = last.trim();
+        if looks_like_identifier(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn last_identifier_segment(raw: &str) -> Option<String> {
+    raw.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|part| !part.is_empty())
+        .filter(|part| looks_like_identifier(part))
+        .next_back()
+        .map(str::to_string)
+}
+
+fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
+    source.get(node.start_byte()..node.end_byte())
 }
 
 fn root_type_name(symbol: &str) -> Option<String> {
@@ -618,5 +944,92 @@ mod tests {
 
         assert_eq!(report.hits.len(), 1);
         assert_eq!(report.hits[0].kind, "member");
+    }
+
+    #[test]
+    fn finds_member_call_on_receiver_subtype_via_type_aware_matching() {
+        let repo = mk_temp_repo();
+        let swift_rel = "ios/SubtypeUsage.swift";
+        write_file(
+            &repo,
+            swift_rel,
+            r#"
+            import SharedSdk
+
+            protocol ParentType {
+                func trace()
+            }
+
+            final class ChildType: ParentType {
+                func trace() {}
+            }
+
+            func run(child: ChildType) {
+                child.trace()
+            }
+            "#,
+        );
+
+        let changes = vec![ApiChange {
+            symbol: "ParentType".to_string(),
+            kind: "member".to_string(),
+            file: Some("shared/src/commonMain/kotlin/Tracer.kt".to_string()),
+            details: "changed `trace`".to_string(),
+        }];
+
+        let report = find_ios_usages(
+            &changes,
+            &repo,
+            &[swift_rel.to_string()],
+            "SharedSdk",
+            &HashSet::new(),
+        )
+        .expect("ios usage search should succeed");
+
+        assert_eq!(report.hits.len(), 1);
+        assert!(
+            report.hits[0].evidence.contains("type_aware_call"),
+            "expected type-aware evidence, got {:?}",
+            report.hits[0].evidence
+        );
+    }
+
+    #[test]
+    fn does_not_match_member_call_when_receiver_type_is_unrelated() {
+        let repo = mk_temp_repo();
+        let swift_rel = "ios/UnrelatedTypeUsage.swift";
+        write_file(
+            &repo,
+            swift_rel,
+            r#"
+            import SharedSdk
+
+            struct LocalOnly {
+                func trace() {}
+            }
+
+            func run(value: LocalOnly) {
+                value.trace()
+            }
+            "#,
+        );
+
+        let changes = vec![ApiChange {
+            symbol: "Tracer".to_string(),
+            kind: "member".to_string(),
+            file: Some("shared/src/commonMain/kotlin/Tracer.kt".to_string()),
+            details: "changed `trace`".to_string(),
+        }];
+
+        let report = find_ios_usages(
+            &changes,
+            &repo,
+            &[swift_rel.to_string()],
+            "SharedSdk",
+            &HashSet::new(),
+        )
+        .expect("ios usage search should succeed");
+
+        assert!(report.hits.is_empty(), "unexpected hits: {:?}", report.hits);
     }
 }
