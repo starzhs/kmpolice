@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.19
+
+### Summary
+- Fixed Kotlin extension receiver extraction so class extensions are consistently detected as member-level API changes.
+
+### Changes
+- Improved extension receiver extraction in MR Kotlin symbol diff:
+  - first uses AST receiver fields (`receiver` / `receiver_type`),
+  - then falls back to prefix parsing for unresolved syntactic forms.
+- Strengthened fallback parsing:
+  - correctly interprets `Route.` as receiver `Route`,
+  - filters Kotlin declaration keywords (`fun`, `val`, `public`, etc.) to avoid false extension detection for top-level declarations.
+- Added regression test for fallback receiver parsing:
+  - regular receiver (`Route`),
+  - companion receiver (`com.example.Route.Companion`).
+
 ## 0.1.18
 
 ### Summary

@@ -1065,13 +1065,27 @@ fn extension_receiver(
     source: &str,
     name_node: Node<'_>,
 ) -> Option<ExtensionReceiver> {
+    if let Some(receiver_node) = node
+        .child_by_field_name("receiver")
+        .or_else(|| node.child_by_field_name("receiver_type"))
+    {
+        if let Some(expr) = node_text(receiver_node, source).map(str::trim)
+            && !expr.is_empty()
+        {
+            return extension_receiver_from_expr(expr);
+        }
+    }
+
     let mut receiver_expr = None::<String>;
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.end_byte() > name_node.start_byte() {
             continue;
         }
-        if is_type_like(child.kind()) || child.kind() == "type_identifier" {
+        if is_type_like(child.kind())
+            || child.kind() == "type_identifier"
+            || child.kind() == "receiver_type"
+        {
             receiver_expr = node_text(child, source).map(str::trim).map(str::to_string);
         }
     }
@@ -1081,20 +1095,52 @@ fn extension_receiver(
         _ => {
             // Fallback for syntaxes where receiver type is not exposed as a direct child.
             let prefix = source.get(node.start_byte()..name_node.start_byte())?;
-            let receiver_token = prefix
-                .trim_end()
-                .trim_end_matches('.')
-                .split_whitespace()
-                .next_back()?;
-            let member_dot = receiver_token.rfind('.')?;
-            let expr = receiver_token[..member_dot].trim();
-            if expr.is_empty() {
-                return None;
-            }
-            expr.to_string()
+            parse_extension_receiver_expr_from_prefix(prefix)?
         }
     };
 
+    extension_receiver_from_expr(&receiver_expr)
+}
+
+fn parse_extension_receiver_expr_from_prefix(prefix: &str) -> Option<String> {
+    let receiver_token = prefix
+        .trim_end()
+        .trim_end_matches('.')
+        .split_whitespace()
+        .next_back()?;
+    if receiver_token.is_empty() {
+        return None;
+    }
+    let kotlin_decl_keywords = [
+        "fun",
+        "val",
+        "var",
+        "public",
+        "private",
+        "internal",
+        "protected",
+        "suspend",
+        "inline",
+        "operator",
+        "infix",
+        "tailrec",
+        "external",
+        "expect",
+        "actual",
+    ];
+    if kotlin_decl_keywords.contains(&receiver_token) {
+        return None;
+    }
+    if let Some(member_dot) = receiver_token.rfind('.') {
+        let expr = receiver_token[..member_dot].trim();
+        if !expr.is_empty() {
+            return Some(expr.to_string());
+        }
+    }
+    Some(receiver_token.to_string())
+}
+
+fn extension_receiver_from_expr(receiver_expr: &str) -> Option<ExtensionReceiver> {
     let mut segments: Vec<&str> = receiver_expr
         .trim_matches(|ch| ch == '(' || ch == ')')
         .split('.')
@@ -1400,7 +1446,8 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
 mod tests {
     use super::{
         ApiChange, build_ios_impact_diagnostics, change_owner_type_names, diff_first_class_symbols,
-        kotlin_file_may_be_related, top_level_change_symbols,
+        kotlin_file_may_be_related, parse_extension_receiver_expr_from_prefix,
+        top_level_change_symbols,
     };
     use crate::config::{Config, Severity};
     use crate::ios_usage::{IosUsageHit, IosUsageReport};
@@ -1606,5 +1653,17 @@ mod tests {
                 .all(|c| !(c.kind == "top_level" && c.symbol == "push")),
             "extension should not be reported as top_level push: {changes:#?}"
         );
+    }
+
+    #[test]
+    fn parses_extension_receiver_expr_from_prefix_for_regular_and_companion() {
+        let regular = parse_extension_receiver_expr_from_prefix("public fun Route.")
+            .expect("regular extension receiver should parse");
+        assert_eq!(regular, "Route");
+
+        let companion =
+            parse_extension_receiver_expr_from_prefix("public fun com.example.Route.Companion.")
+                .expect("companion extension receiver should parse");
+        assert_eq!(companion, "com.example.Route");
     }
 }
