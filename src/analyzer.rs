@@ -407,7 +407,7 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
         Regex::new(r"(?m)^\s*(?:public\s+)?(?:fun|const\s+val|val|var)\s+([A-Za-z_]\w*)")
             .expect("companion member regex");
     let companion_extension_member_regex = Regex::new(
-        r"(?m)^\s*(?:public\s+)?(?:suspend\s+)?(?:inline\s+)?(?:fun|val|var)\s*(?:<[^>\n]+>\s*)?([A-Za-z_]\w*)\.Companion\.([A-Za-z_]\w*)",
+        r"(?m)^\s*(?:public\s+)?(?:suspend\s+)?(?:inline\s+)?(?:fun|val|var)\s*(?:<[^>\n]+>\s*)?([A-Za-z_][A-Za-z0-9_\.]*)\s*\.\s*(?:Companion|companion)\s*\.\s*([A-Za-z_]\w*)",
     )
     .expect("companion extension member regex");
 
@@ -508,7 +508,11 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
         }
 
         for captures in companion_extension_member_regex.captures_iter(&file.contents) {
-            let class_name = captures[1].to_string();
+            let class_name = captures[1]
+                .split('.')
+                .next_back()
+                .unwrap_or(&captures[1])
+                .to_string();
             let member_name = captures[2].to_string();
             companion_members
                 .entry(class_name)
@@ -2584,6 +2588,62 @@ mod tests {
                     import shared
                     func test() {
                         _ = Route.companion.webViewRoute(url: "https://example.com")
+                    }
+                "#
+                .to_string(),
+                snapshot: None,
+            }],
+        };
+
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "companion_object_missing" && d.code != "companion_member_missing"),
+            "unexpected companion diagnostics: {:?}",
+            diagnostics
+                .iter()
+                .filter(|d| d.code == "companion_object_missing" || d.code == "companion_member_missing")
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn does_not_report_companion_missing_for_lowercase_or_fq_companion_extension_receiver() {
+        let snapshot = ProjectSnapshot {
+            label: "workspace".to_string(),
+            kotlin_files: vec![
+                SourceFile {
+                    path: "TCRoute.kt".to_string(),
+                    contents: r#"
+                        public data class Route(val name: String) {
+                            public companion object
+                        }
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+                SourceFile {
+                    path: "WebViewRoute.kt".to_string(),
+                    contents: r#"
+                        public fun Route.companion.push(parameters: Map<String, String>): Route =
+                            Route(name = "blablabla")
+
+                        public fun com.example.Route.Companion.pop(parameters: Map<String, String>): Route =
+                            Route(name = "blablabla")
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+            ],
+            ios_files: vec![SourceFile {
+                path: "Use.swift".to_string(),
+                contents: r#"
+                    import shared
+                    func test() {
+                        _ = Route.companion.push(parameters: [:])
+                        _ = Route.companion.pop(parameters: [:])
                     }
                 "#
                 .to_string(),

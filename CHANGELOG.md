@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.17
+
+### Summary
+- Fixed false companion diagnostics when companion API is provided via Kotlin companion extensions in separate files.
+
+### Changes
+- Companion index now resolves extension receiver types with:
+  - simple receiver (`Route.Companion.push(...)`)
+  - fully-qualified receiver (`com.example.Route.Companion.push(...)`)
+- Swift calls like `Route.companion.push(...)` now correctly match indexed Kotlin companion extension members.
+- Added regression test coverage for multi-file companion extension scenarios.
+
 ## 0.1.16
 
 ### Summary
