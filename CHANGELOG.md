@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.20
+
+### Summary
+- Improved MR Kotlin scope expansion for Swift-only change scenarios to reduce false missing companion/member diagnostics.
+
+### Changes
+- Added Swift-changed-file scope hints in MR mode:
+  - parse changed Swift files (with shared SDK import),
+  - extract usage tokens from companion and `*Kt` call patterns,
+  - include type-like identifiers as additional scope hints.
+- Kotlin scope expansion now uses these Swift hints even when Kotlin diff is empty.
+- This allows loading relevant Kotlin files for validation when Swift call-sites changed but Kotlin files did not.
+- Added tests for Swift scope hint extraction:
+  - companion usage with shared import,
+  - no extraction without shared import.
+
 ## 0.1.19
 
 ### Summary

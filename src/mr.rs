@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
+use regex::Regex;
 use rayon::prelude::*;
 use tree_sitter::{Node, Parser};
 
@@ -62,6 +63,7 @@ pub fn run_mr(
     let kotlin_changed = collect_kotlin_changed_paths(&repo, &base)?;
     let swift_changed = collect_swift_changed_paths(&repo, &base)?;
     let ios_paths = collect_worktree_paths_scoped(&repo, config, "swift")?;
+    let swift_scope_hints = collect_swift_scope_hints(&repo, &swift_changed, shared_sdk_name);
     let ios_scope = Some(&swift_changed);
     let initial_kotlin_scope = Some(&kotlin_changed);
 
@@ -79,8 +81,14 @@ pub fn run_mr(
     )?;
 
     // Stage 2: auto-expand Kotlin scope with related files.
-    let kotlin_scope =
-        compute_auto_kotlin_scope(&repo, &base, config, &kotlin_changed, &api_changes)?;
+    let kotlin_scope = compute_auto_kotlin_scope(
+        &repo,
+        &base,
+        config,
+        &kotlin_changed,
+        &api_changes,
+        &swift_scope_hints,
+    )?;
     let kotlin_scope_ref = Some(&kotlin_scope);
     let base_snapshot = load_from_git_scoped(&repo, &base, config, kotlin_scope_ref, ios_scope)?;
     let head_snapshot = load_from_worktree_scoped(&repo, config, kotlin_scope_ref, ios_scope)?;
@@ -254,9 +262,10 @@ fn compute_auto_kotlin_scope(
     config: &Config,
     kotlin_changed: &HashSet<String>,
     api_changes: &[ApiChange],
+    swift_scope_hints: &HashSet<String>,
 ) -> Result<HashSet<String>> {
     let mut scope = kotlin_changed.clone();
-    if api_changes.is_empty() {
+    if api_changes.is_empty() && swift_scope_hints.is_empty() {
         return Ok(scope);
     }
 
@@ -277,7 +286,7 @@ fn compute_auto_kotlin_scope(
 
     let owners = change_owner_type_names(api_changes);
     let top_level_symbols = top_level_change_symbols(api_changes);
-    if owners.is_empty() && top_level_symbols.is_empty() {
+    if owners.is_empty() && top_level_symbols.is_empty() && swift_scope_hints.is_empty() {
         return Ok(scope);
     }
 
@@ -298,7 +307,12 @@ fn compute_auto_kotlin_scope(
             let include = std::fs::read_to_string(repo.join(path))
                 .ok()
                 .is_some_and(|contents| {
-                    kotlin_file_may_be_related(&contents, &owners, &top_level_symbols)
+                    kotlin_file_may_be_related(
+                        &contents,
+                        &owners,
+                        &top_level_symbols,
+                        swift_scope_hints,
+                    )
                 });
             progress.set_message(format!("Kotlin scope expand | last file: {path}"));
             progress.inc(1);
@@ -351,6 +365,7 @@ fn kotlin_file_may_be_related(
     contents: &str,
     owner_types: &HashSet<String>,
     top_level_symbols: &HashSet<String>,
+    swift_scope_hints: &HashSet<String>,
 ) -> bool {
     for owner in owner_types {
         if contents.contains(owner) {
@@ -362,7 +377,116 @@ fn kotlin_file_may_be_related(
             return true;
         }
     }
+    for token in swift_scope_hints {
+        if contents.contains(token) {
+            return true;
+        }
+    }
     false
+}
+
+fn collect_swift_scope_hints(
+    repo: &Path,
+    swift_changed: &HashSet<String>,
+    shared_sdk_name: &str,
+) -> HashSet<String> {
+    let mut hints = HashSet::new();
+    for path in swift_changed {
+        if !path.ends_with(".swift") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(repo.join(path)) else {
+            continue;
+        };
+        hints.extend(extract_swift_scope_hints_from_contents(
+            &contents,
+            shared_sdk_name,
+        ));
+    }
+    hints
+}
+
+fn extract_swift_scope_hints_from_contents(contents: &str, shared_sdk_name: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if !contains_shared_import_for_scope(contents, shared_sdk_name) {
+        return out;
+    }
+
+    let companion_usage_regex = Regex::new(r"\b([A-Z][A-Za-z_0-9]*)\.companion\.([A-Za-z_]\w*)")
+        .expect("companion usage regex");
+    for captures in companion_usage_regex.captures_iter(contents) {
+        out.insert(captures[1].to_string());
+        out.insert(captures[2].to_string());
+    }
+
+    let kt_usage_regex =
+        Regex::new(r"\b([A-Z][A-Za-z_0-9]*Kt)\.([A-Za-z_]\w*)").expect("kt usage regex");
+    for captures in kt_usage_regex.captures_iter(contents) {
+        out.insert(captures[1].to_string());
+        out.insert(captures[2].to_string());
+    }
+
+    let common_swift_types: HashSet<&'static str> = [
+        "String",
+        "Int",
+        "Int32",
+        "Int64",
+        "UInt",
+        "UInt32",
+        "UInt64",
+        "Double",
+        "Float",
+        "Bool",
+        "Void",
+        "Any",
+        "AnyObject",
+        "Error",
+        "Result",
+        "Array",
+        "Dictionary",
+        "Set",
+        "Optional",
+        "URL",
+        "Data",
+    ]
+    .into_iter()
+    .collect();
+
+    let type_identifier_regex = Regex::new(r"\b([A-Z][A-Za-z_0-9]*)\b").expect("type identifier regex");
+    for captures in type_identifier_regex.captures_iter(contents) {
+        let token = captures[1].to_string();
+        if common_swift_types.contains(token.as_str()) {
+            continue;
+        }
+        out.insert(token);
+    }
+
+    out
+}
+
+fn contains_shared_import_for_scope(contents: &str, shared_sdk_name: &str) -> bool {
+    contents.lines().any(|line| {
+        let mut parts = line.split_whitespace().peekable();
+        while let Some(token) = parts.peek().copied() {
+            if token.starts_with('@') {
+                parts.next();
+                continue;
+            }
+            break;
+        }
+
+        let Some(keyword) = parts.next() else {
+            return false;
+        };
+        if keyword != "import" {
+            return false;
+        }
+
+        let Some(module_token) = parts.next() else {
+            return false;
+        };
+        module_token == shared_sdk_name || module_token.starts_with(&format!("{shared_sdk_name}."))
+    })
 }
 
 fn diff_kotlin_api_changes(
@@ -1446,7 +1570,8 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
 mod tests {
     use super::{
         ApiChange, build_ios_impact_diagnostics, change_owner_type_names, diff_first_class_symbols,
-        kotlin_file_may_be_related, parse_extension_receiver_expr_from_prefix,
+        extract_swift_scope_hints_from_contents, kotlin_file_may_be_related,
+        parse_extension_receiver_expr_from_prefix,
         top_level_change_symbols,
     };
     use crate::config::{Config, Severity};
@@ -1603,6 +1728,7 @@ mod tests {
     fn prefilter_marks_related_kotlin_files() {
         let owners = HashSet::from([String::from("Route")]);
         let top_level = HashSet::from([String::from("CustomViewController")]);
+        let swift_hints = HashSet::new();
 
         let route_file = r#"
             public fun Route.Companion.webViewRoute(url: String): Route = Route("x")
@@ -1614,13 +1740,24 @@ mod tests {
             public class AnalyticsLogger
         "#;
 
-        assert!(kotlin_file_may_be_related(route_file, &owners, &top_level));
+        assert!(kotlin_file_may_be_related(
+            route_file,
+            &owners,
+            &top_level,
+            &swift_hints
+        ));
         assert!(kotlin_file_may_be_related(
             top_level_file,
             &owners,
-            &top_level
+            &top_level,
+            &swift_hints
         ));
-        assert!(!kotlin_file_may_be_related(unrelated, &owners, &top_level));
+        assert!(!kotlin_file_may_be_related(
+            unrelated,
+            &owners,
+            &top_level,
+            &swift_hints
+        ));
     }
 
     #[test]
@@ -1665,5 +1802,32 @@ mod tests {
             parse_extension_receiver_expr_from_prefix("public fun com.example.Route.Companion.")
                 .expect("companion extension receiver should parse");
         assert_eq!(companion, "com.example.Route");
+    }
+
+    #[test]
+    fn extracts_swift_scope_hints_for_companion_usage_with_shared_import() {
+        let swift = r#"
+            import SharedSdk
+
+            func run() {
+                _ = Route.companion.push(parameters: [:])
+                _ = MainKt.CustomViewController(onClose: {})
+            }
+        "#;
+        let hints = extract_swift_scope_hints_from_contents(swift, "SharedSdk");
+        assert!(hints.contains("Route"));
+        assert!(hints.contains("push"));
+        assert!(hints.contains("MainKt"));
+        assert!(hints.contains("CustomViewController"));
+    }
+
+    #[test]
+    fn does_not_extract_swift_scope_hints_without_shared_import() {
+        let swift = r#"
+            import Foundation
+            func run() { _ = Route.companion.push(parameters: [:]) }
+        "#;
+        let hints = extract_swift_scope_hints_from_contents(swift, "SharedSdk");
+        assert!(hints.is_empty());
     }
 }
