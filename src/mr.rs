@@ -10,11 +10,14 @@ use tree_sitter::{Node, Parser};
 use crate::analyzer::{compare_project, introduced_diagnostics};
 use crate::config::{Config, Severity};
 use crate::git::{git_changed_files_between, git_changed_files_worktree, merge_base};
-use crate::ios_usage::{find_ios_usages, IosUsageReport};
+use crate::ios_usage::{IosUsageReport, find_ios_usages};
 use crate::model::{
     Contract, ContractKind, Diagnostic, Member, MemberSignature, ProjectSnapshot, SourceFile,
 };
-use crate::source::{collect_worktree_paths_scoped, load_from_git_scoped, load_from_worktree_scoped};
+use crate::source::{
+    collect_git_paths_scoped, collect_worktree_paths_scoped, load_from_git_scoped,
+    load_from_worktree_scoped,
+};
 
 #[derive(Debug, Clone)]
 pub struct ApiChange {
@@ -60,16 +63,32 @@ pub fn run_mr(
     let swift_changed = collect_swift_changed_paths(&repo, &base)?;
     let ios_paths = collect_worktree_paths_scoped(&repo, config, "swift")?;
     let ios_scope = Some(&swift_changed);
-    let kotlin_scope = Some(&kotlin_changed);
+    let initial_kotlin_scope = Some(&kotlin_changed);
 
-    let base_snapshot = load_from_git_scoped(&repo, &base, config, kotlin_scope, ios_scope)?;
-    let head_snapshot = load_from_worktree_scoped(&repo, config, kotlin_scope, ios_scope)?;
+    // Stage 1: narrow diff on changed Kotlin files only.
+    let base_snapshot_narrow =
+        load_from_git_scoped(&repo, &base, config, initial_kotlin_scope, ios_scope)?;
+    let head_snapshot_narrow =
+        load_from_worktree_scoped(&repo, config, initial_kotlin_scope, ios_scope)?;
+    let api_changes = diff_kotlin_api_changes(
+        &repo,
+        &base,
+        &kotlin_changed,
+        &base_snapshot_narrow,
+        &head_snapshot_narrow,
+    )?;
+
+    // Stage 2: auto-expand Kotlin scope with related files.
+    let kotlin_scope =
+        compute_auto_kotlin_scope(&repo, &base, config, &kotlin_changed, &api_changes)?;
+    let kotlin_scope_ref = Some(&kotlin_scope);
+    let base_snapshot = load_from_git_scoped(&repo, &base, config, kotlin_scope_ref, ios_scope)?;
+    let head_snapshot = load_from_worktree_scoped(&repo, config, kotlin_scope_ref, ios_scope)?;
 
     let base_diags = compare_project(&base_snapshot, config)?;
     let head_diags = compare_project(&head_snapshot, config)?;
     let mut diagnostics = introduced_diagnostics(base_diags, head_diags);
 
-    let api_changes = diff_kotlin_api_changes(&repo, &base, &kotlin_changed, &base_snapshot, &head_snapshot)?;
     let ios_usage = find_ios_usages(
         &api_changes,
         &repo,
@@ -77,7 +96,11 @@ pub fn run_mr(
         shared_sdk_name,
         &swift_changed,
     )?;
-    diagnostics.extend(build_ios_impact_diagnostics(&api_changes, &ios_usage, config));
+    diagnostics.extend(build_ios_impact_diagnostics(
+        &api_changes,
+        &ios_usage,
+        config,
+    ));
     if verbose {
         print_verbose_changes(&api_changes);
     }
@@ -225,6 +248,123 @@ fn collect_swift_changed_paths(repo: &Path, base: &str) -> Result<HashSet<String
         .collect())
 }
 
+fn compute_auto_kotlin_scope(
+    repo: &Path,
+    base: &str,
+    config: &Config,
+    kotlin_changed: &HashSet<String>,
+    api_changes: &[ApiChange],
+) -> Result<HashSet<String>> {
+    let mut scope = kotlin_changed.clone();
+    if api_changes.is_empty() {
+        return Ok(scope);
+    }
+
+    let mut universe = HashSet::<String>::new();
+    let worktree_paths = collect_worktree_paths_scoped(repo, config, "kt")?;
+    let base_paths = collect_git_paths_scoped(repo, base, config, "kt")?;
+    universe.extend(
+        worktree_paths
+            .into_iter()
+            .filter(|path| is_kotlin_shared_source_set_path(path)),
+    );
+    universe.extend(
+        base_paths
+            .into_iter()
+            .filter(|path| is_kotlin_shared_source_set_path(path)),
+    );
+    universe.extend(kotlin_changed.iter().cloned());
+
+    let owners = change_owner_type_names(api_changes);
+    let top_level_symbols = top_level_change_symbols(api_changes);
+    if owners.is_empty() && top_level_symbols.is_empty() {
+        return Ok(scope);
+    }
+
+    let candidates: Vec<String> = universe.into_iter().collect();
+    let progress = Arc::new(ProgressBar::new(candidates.len() as u64));
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} {msg:<72} [{bar:30.cyan/blue}] {pos}/{len} ({percent}%)",
+        )
+        .expect("progress style")
+        .progress_chars("=> "),
+    );
+    progress.set_message("Kotlin scope expand | waiting...");
+
+    let expanded: HashSet<String> = candidates
+        .par_iter()
+        .filter_map(|path| {
+            let include = std::fs::read_to_string(repo.join(path))
+                .ok()
+                .is_some_and(|contents| {
+                    kotlin_file_may_be_related(&contents, &owners, &top_level_symbols)
+                });
+            progress.set_message(format!("Kotlin scope expand | last file: {path}"));
+            progress.inc(1);
+            include.then(|| path.clone())
+        })
+        .collect();
+
+    progress.finish_with_message("Kotlin scope expand done");
+    scope.extend(expanded);
+    Ok(scope)
+}
+
+fn is_kotlin_shared_source_set_path(path: &str) -> bool {
+    path.ends_with(".kt") && (path.contains("/commonMain/") || path.contains("/iosMain/"))
+}
+
+fn simple_type_name(symbol: &str) -> String {
+    symbol
+        .rsplit('.')
+        .next()
+        .unwrap_or(symbol)
+        .trim()
+        .to_string()
+}
+
+fn change_owner_type_names(changes: &[ApiChange]) -> HashSet<String> {
+    changes
+        .iter()
+        .filter(|change| {
+            matches!(
+                change.kind.as_str(),
+                "type" | "member" | "constructor" | "enum_sealed" | "companion"
+            )
+        })
+        .map(|change| simple_type_name(&change.symbol))
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn top_level_change_symbols(changes: &[ApiChange]) -> HashSet<String> {
+    changes
+        .iter()
+        .filter(|change| change.kind == "top_level")
+        .map(|change| change.symbol.clone())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+fn kotlin_file_may_be_related(
+    contents: &str,
+    owner_types: &HashSet<String>,
+    top_level_symbols: &HashSet<String>,
+) -> bool {
+    for owner in owner_types {
+        if contents.contains(owner) {
+            return true;
+        }
+    }
+    for symbol in top_level_symbols {
+        if contents.contains(symbol) {
+            return true;
+        }
+    }
+    false
+}
+
 fn diff_kotlin_api_changes(
     repo: &Path,
     base: &str,
@@ -277,7 +417,11 @@ fn diff_kotlin_api_changes(
             let mut local = Vec::new();
             let before_contracts = contracts_for_file(before_ref).unwrap_or_default();
             let after_contracts = contracts_for_file(after_ref).unwrap_or_default();
-            local.extend(diff_contract_sets(&before_contracts, &after_contracts, path));
+            local.extend(diff_contract_sets(
+                &before_contracts,
+                &after_contracts,
+                path,
+            ));
             local.extend(diff_first_class_symbols(before_ref, after_ref, path));
             progress.set_message(format!("Kotlin AST expand | last file: {path}"));
             progress.inc(1);
@@ -296,7 +440,11 @@ fn diff_kotlin_api_changes(
     Ok(changes)
 }
 
-fn push_unique_change(changes: &mut Vec<ApiChange>, unique: &mut HashSet<String>, change: ApiChange) {
+fn push_unique_change(
+    changes: &mut Vec<ApiChange>,
+    unique: &mut HashSet<String>,
+    change: ApiChange,
+) {
     let key = format!(
         "{}|{}|{}|{}",
         change.kind,
@@ -322,14 +470,21 @@ fn contracts_for_file(file: Option<&SourceFile>) -> Result<Vec<Contract>> {
     Ok(analysis
         .kotlin_contracts
         .into_iter()
-        .filter(|contract| matches!(contract.kind, ContractKind::KotlinClass | ContractKind::KotlinInterface))
+        .filter(|contract| {
+            matches!(
+                contract.kind,
+                ContractKind::KotlinClass | ContractKind::KotlinInterface
+            )
+        })
         .collect())
 }
 
 fn diff_contract_sets(before: &[Contract], after: &[Contract], path: &str) -> Vec<ApiChange> {
     let mut out = Vec::new();
-    let before_map: HashMap<&str, &Contract> = before.iter().map(|c| (c.fq_name.as_str(), c)).collect();
-    let after_map: HashMap<&str, &Contract> = after.iter().map(|c| (c.fq_name.as_str(), c)).collect();
+    let before_map: HashMap<&str, &Contract> =
+        before.iter().map(|c| (c.fq_name.as_str(), c)).collect();
+    let after_map: HashMap<&str, &Contract> =
+        after.iter().map(|c| (c.fq_name.as_str(), c)).collect();
 
     for (name, before_c) in &before_map {
         let Some(after_c) = after_map.get(name) else {
@@ -358,8 +513,11 @@ fn diff_contract_sets(before: &[Contract], after: &[Contract], path: &str) -> Ve
 
 fn diff_members(before: &Contract, after: &Contract, path: &str) -> Vec<ApiChange> {
     let mut out = Vec::new();
-    let before_members: HashMap<&str, &Member> =
-        before.members.iter().map(|m| (m.name.as_str(), m)).collect();
+    let before_members: HashMap<&str, &Member> = before
+        .members
+        .iter()
+        .map(|m| (m.name.as_str(), m))
+        .collect();
     let after_members: HashMap<&str, &Member> =
         after.members.iter().map(|m| (m.name.as_str(), m)).collect();
 
@@ -436,7 +594,10 @@ pub fn render_verbose_changes(changes: &[ApiChange]) -> String {
     }
     let mut grouped: BTreeMap<&str, Vec<&ApiChange>> = BTreeMap::new();
     for change in changes {
-        grouped.entry(change.kind.as_str()).or_default().push(change);
+        grouped
+            .entry(change.kind.as_str())
+            .or_default()
+            .push(change);
     }
     for (kind, group) in grouped {
         out.push_str(&format!("\n\n{kind}:"));
@@ -454,11 +615,11 @@ pub fn render_verbose_changes(changes: &[ApiChange]) -> String {
 pub fn render_ios_usage_report(report: &IosUsageReport) -> String {
     let mut out = String::new();
     out.push_str("iOS usage index:");
-    out.push_str(&format!("\n- swift files total: {}", report.swift_files_total));
     out.push_str(&format!(
-        "\n- candidate files: {}",
-        report.candidate_files
+        "\n- swift files total: {}",
+        report.swift_files_total
     ));
+    out.push_str(&format!("\n- candidate files: {}", report.candidate_files));
     out.push_str(&format!("\n- parsed files: {}", report.parsed_files));
     out.push_str(&format!("\n- matches: {}", report.hits.len()));
     out.push_str(&format!("\n- touched matches: {}", report.touched_hits));
@@ -514,6 +675,7 @@ struct FirstClassSymbols {
     enum_or_sealed_cases: HashMap<String, BTreeSet<String>>,
     top_level_members: HashMap<String, String>,
     companion_members: HashMap<String, BTreeSet<String>>,
+    extension_members: HashMap<String, HashMap<String, BTreeSet<String>>>,
     typealiases: HashMap<String, String>,
 }
 
@@ -539,8 +701,16 @@ fn diff_first_class_symbols(
                 file: Some(path.to_string()),
                 details: format!(
                     "before [{}] -> after [{}]",
-                    before_overloads.iter().cloned().collect::<Vec<_>>().join(" | "),
-                    after_overloads.iter().cloned().collect::<Vec<_>>().join(" | ")
+                    before_overloads
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                    after_overloads
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ")
                 ),
             });
         }
@@ -553,7 +723,11 @@ fn diff_first_class_symbols(
                 file: Some(path.to_string()),
                 details: format!(
                     "added [{}]",
-                    after_overloads.iter().cloned().collect::<Vec<_>>().join(" | ")
+                    after_overloads
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ")
                 ),
             });
         }
@@ -636,7 +810,11 @@ fn diff_first_class_symbols(
                 file: Some(path.to_string()),
                 details: format!(
                     "before [{}] -> after [{}]",
-                    before_members.iter().cloned().collect::<Vec<_>>().join(", "),
+                    before_members
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     after_members.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
             });
@@ -653,6 +831,59 @@ fn diff_first_class_symbols(
                     after_members.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
             });
+        }
+    }
+
+    let extension_owners: BTreeSet<String> = before_symbols
+        .extension_members
+        .keys()
+        .chain(after_symbols.extension_members.keys())
+        .cloned()
+        .collect();
+    for owner in extension_owners {
+        let before_by_name = before_symbols
+            .extension_members
+            .get(&owner)
+            .cloned()
+            .unwrap_or_default();
+        let after_by_name = after_symbols
+            .extension_members
+            .get(&owner)
+            .cloned()
+            .unwrap_or_default();
+        let member_names: BTreeSet<String> = before_by_name
+            .keys()
+            .chain(after_by_name.keys())
+            .cloned()
+            .collect();
+        for member in member_names {
+            match (before_by_name.get(&member), after_by_name.get(&member)) {
+                (Some(before_sigs), Some(after_sigs)) if before_sigs != after_sigs => {
+                    changes.push(ApiChange {
+                        symbol: owner.clone(),
+                        kind: "member".to_string(),
+                        file: Some(path.to_string()),
+                        details: format!("changed `{member}`"),
+                    });
+                }
+                (Some(_), None) => {
+                    changes.push(ApiChange {
+                        symbol: owner.clone(),
+                        kind: "member".to_string(),
+                        file: Some(path.to_string()),
+                        details: format!("removed `{member}`"),
+                    });
+                }
+                (None, Some(_)) => {
+                    changes.push(ApiChange {
+                        symbol: owner.clone(),
+                        kind: "member".to_string(),
+                        file: Some(path.to_string()),
+                        details: format!("added `{member}`"),
+                    });
+                }
+                _ => {}
+            }
         }
     }
 
@@ -699,7 +930,10 @@ fn extract_first_class_symbols(source: Option<&str>) -> FirstClassSymbols {
         return FirstClassSymbols::default();
     };
     let mut parser = Parser::new();
-    if parser.set_language(&tree_sitter_kotlin::language()).is_err() {
+    if parser
+        .set_language(&tree_sitter_kotlin::language())
+        .is_err()
+    {
         return FirstClassSymbols::default();
     }
     let Some(tree) = parser.parse(source, None) else {
@@ -738,7 +972,9 @@ fn collect_typealias(node: Node<'_>, source: &str, symbols: &mut FirstClassSymbo
         .and_then(|text| text.split('=').nth(1))
         .map(str::trim)
         .unwrap_or("unknown");
-    symbols.typealiases.insert(name.to_string(), target.to_string());
+    symbols
+        .typealiases
+        .insert(name.to_string(), target.to_string());
 }
 
 fn collect_top_level_callable(
@@ -757,9 +993,24 @@ fn collect_top_level_callable(
         return;
     };
     let labels = parameter_labels_from_node(node, source);
-    let return_type = kotlin_return_type_for_first_class(node, source).unwrap_or("Unit".to_string());
+    let return_type =
+        kotlin_return_type_for_first_class(node, source).unwrap_or("Unit".to_string());
     let signature = format!("{kind} {}({}) -> {return_type}", name, labels.join(","));
-    symbols.top_level_members.insert(name.to_string(), signature);
+    if let Some(receiver) = extension_receiver(node, source, name_node) {
+        if !receiver.is_companion {
+            symbols
+                .extension_members
+                .entry(receiver.owner)
+                .or_default()
+                .entry(name.to_string())
+                .or_default()
+                .insert(signature);
+            return;
+        }
+    }
+    symbols
+        .top_level_members
+        .insert(name.to_string(), signature);
 }
 
 fn collect_top_level_property(node: Node<'_>, source: &str, symbols: &mut FirstClassSymbols) {
@@ -787,7 +1038,94 @@ fn collect_top_level_property(node: Node<'_>, source: &str, symbols: &mut FirstC
         name,
         property_type
     );
-    symbols.top_level_members.insert(name.to_string(), signature);
+    if let Some(receiver) = extension_receiver(node, source, name_node) {
+        if !receiver.is_companion {
+            symbols
+                .extension_members
+                .entry(receiver.owner)
+                .or_default()
+                .entry(name.to_string())
+                .or_default()
+                .insert(signature);
+            return;
+        }
+    }
+    symbols
+        .top_level_members
+        .insert(name.to_string(), signature);
+}
+
+struct ExtensionReceiver {
+    owner: String,
+    is_companion: bool,
+}
+
+fn extension_receiver(
+    node: Node<'_>,
+    source: &str,
+    name_node: Node<'_>,
+) -> Option<ExtensionReceiver> {
+    let mut receiver_expr = None::<String>;
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.end_byte() > name_node.start_byte() {
+            continue;
+        }
+        if is_type_like(child.kind()) || child.kind() == "type_identifier" {
+            receiver_expr = node_text(child, source).map(str::trim).map(str::to_string);
+        }
+    }
+
+    let receiver_expr = match receiver_expr {
+        Some(expr) if !expr.is_empty() => expr,
+        _ => {
+            // Fallback for syntaxes where receiver type is not exposed as a direct child.
+            let prefix = source.get(node.start_byte()..name_node.start_byte())?;
+            let receiver_token = prefix
+                .trim_end()
+                .trim_end_matches('.')
+                .split_whitespace()
+                .next_back()?;
+            let member_dot = receiver_token.rfind('.')?;
+            let expr = receiver_token[..member_dot].trim();
+            if expr.is_empty() {
+                return None;
+            }
+            expr.to_string()
+        }
+    };
+
+    let mut segments: Vec<&str> = receiver_expr
+        .trim_matches(|ch| ch == '(' || ch == ')')
+        .split('.')
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+
+    let mut is_companion = false;
+    if let Some(last) = segments.last()
+        && (*last == "Companion" || *last == "companion")
+    {
+        is_companion = true;
+        segments.pop();
+    }
+    let owner_raw = *segments.last()?;
+    let owner = owner_raw
+        .split('<')
+        .next()
+        .unwrap_or(owner_raw)
+        .trim()
+        .trim_end_matches('?')
+        .trim_end_matches('!')
+        .to_string();
+    if owner.is_empty() {
+        return None;
+    }
+    Some(ExtensionReceiver {
+        owner,
+        is_companion,
+    })
 }
 
 fn collect_class_like(node: Node<'_>, source: &str, symbols: &mut FirstClassSymbols) {
@@ -876,7 +1214,8 @@ fn collect_companion(
                     }
                 }
                 "property_declaration" => {
-                    if let Some(var_node) = first_named_child_of_kind(member, "variable_declaration")
+                    if let Some(var_node) =
+                        first_named_child_of_kind(member, "variable_declaration")
                         && let Some(name_node) =
                             first_named_child_of_kind(var_node, "simple_identifier")
                         && let Some(name) = node_text(name_node, source)
@@ -941,7 +1280,11 @@ fn collect_enum_sealed_cases(
 
 fn parameter_labels_from_node(node: Node<'_>, source: &str) -> Vec<String> {
     let mut parameters: Vec<(usize, String)> = Vec::new();
-    for kind in ["class_parameter", "parameter", "parameter_with_optional_type"] {
+    for kind in [
+        "class_parameter",
+        "parameter",
+        "parameter_with_optional_type",
+    ] {
         for param in descendants_by_kind(node, kind) {
             let Some(name_node) = first_named_child_of_kind(param, "simple_identifier") else {
                 continue;
@@ -1030,7 +1373,8 @@ fn kotlin_return_type_for_first_class(node: Node<'_>, source: &str) -> Option<St
 
 fn first_named_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
-    node.named_children(&mut cursor).find(|child| child.kind() == kind)
+    node.named_children(&mut cursor)
+        .find(|child| child.kind() == kind)
 }
 
 fn descendants_by_kind<'a>(node: Node<'a>, kind: &str) -> Vec<Node<'a>> {
@@ -1054,10 +1398,14 @@ fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_ios_impact_diagnostics, diff_first_class_symbols, ApiChange};
+    use super::{
+        ApiChange, build_ios_impact_diagnostics, change_owner_type_names, diff_first_class_symbols,
+        kotlin_file_may_be_related, top_level_change_symbols,
+    };
     use crate::config::{Config, Severity};
     use crate::ios_usage::{IosUsageHit, IosUsageReport};
     use crate::model::SourceFile;
+    use std::collections::HashSet;
 
     fn sf(path: &str, contents: &str) -> SourceFile {
         SourceFile {
@@ -1088,7 +1436,9 @@ mod tests {
 
         let changes = diff_first_class_symbols(Some(&before), Some(&after), &before.path);
         assert!(
-            changes.iter().any(|c| c.kind == "top_level" && c.symbol == "CustomViewController"),
+            changes
+                .iter()
+                .any(|c| c.kind == "top_level" && c.symbol == "CustomViewController"),
             "expected top_level change for CustomViewController, got: {changes:#?}"
         );
     }
@@ -1114,7 +1464,9 @@ mod tests {
 
         let changes = diff_first_class_symbols(Some(&before), Some(&after), &before.path);
         assert!(
-            changes.iter().any(|c| c.kind == "constructor" && c.symbol == "SomeClass"),
+            changes
+                .iter()
+                .any(|c| c.kind == "constructor" && c.symbol == "SomeClass"),
             "expected constructor change for SomeClass, got: {changes:#?}"
         );
     }
@@ -1175,5 +1527,84 @@ mod tests {
         let diags = build_ios_impact_diagnostics(&api_changes, &usage, &config);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn expands_scope_tokens_for_owner_and_top_level_changes() {
+        let changes = vec![
+            ApiChange {
+                symbol: "com.example.Route".to_string(),
+                kind: "member".to_string(),
+                file: Some("shared/src/commonMain/kotlin/Route.kt".to_string()),
+                details: "changed `push`".to_string(),
+            },
+            ApiChange {
+                symbol: "CustomViewController".to_string(),
+                kind: "top_level".to_string(),
+                file: Some("shared/src/iosMain/kotlin/main.kt".to_string()),
+                details: "changed signature".to_string(),
+            },
+        ];
+        let owners = change_owner_type_names(&changes);
+        let top_level = top_level_change_symbols(&changes);
+
+        assert!(owners.contains("Route"));
+        assert!(top_level.contains("CustomViewController"));
+    }
+
+    #[test]
+    fn prefilter_marks_related_kotlin_files() {
+        let owners = HashSet::from([String::from("Route")]);
+        let top_level = HashSet::from([String::from("CustomViewController")]);
+
+        let route_file = r#"
+            public fun Route.Companion.webViewRoute(url: String): Route = Route("x")
+        "#;
+        let top_level_file = r#"
+            public fun CustomViewController(onClose: () -> Unit): UIViewController = TODO()
+        "#;
+        let unrelated = r#"
+            public class AnalyticsLogger
+        "#;
+
+        assert!(kotlin_file_may_be_related(route_file, &owners, &top_level));
+        assert!(kotlin_file_may_be_related(
+            top_level_file,
+            &owners,
+            &top_level
+        ));
+        assert!(!kotlin_file_may_be_related(unrelated, &owners, &top_level));
+    }
+
+    #[test]
+    fn detects_class_extension_function_change_as_member_change() {
+        let before = sf(
+            "shared/src/commonMain/kotlin/RouteExtensions.kt",
+            r#"
+            public class Route
+            public fun Route.push(parameters: Map<String, String>): Route = this
+            "#,
+        );
+        let after = sf(
+            "shared/src/commonMain/kotlin/RouteExtensions.kt",
+            r#"
+            public class Route
+            public fun Route.push(parameters: Map<String, String>, animated: Boolean): Route = this
+            "#,
+        );
+
+        let changes = diff_first_class_symbols(Some(&before), Some(&after), &before.path);
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.kind == "member" && c.symbol == "Route" && c.details.contains("`push`")),
+            "expected member-level change for Route.push extension, got: {changes:#?}"
+        );
+        assert!(
+            changes
+                .iter()
+                .all(|c| !(c.kind == "top_level" && c.symbol == "push")),
+            "extension should not be reported as top_level push: {changes:#?}"
+        );
     }
 }

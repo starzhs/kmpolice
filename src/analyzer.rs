@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use regex::Regex;
+use tree_sitter::{Node, Parser as TsParser};
 
 use crate::config::Config;
 use crate::model::{
@@ -397,19 +398,6 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
     .expect("declared type regex");
     let top_level_member_regex =
         Regex::new(r"(?m)^\s*(?:public\s+)?(?:fun|val)\s+([A-Za-z_]\w*)").expect("top-level regex");
-    let companion_block_regex =
-        Regex::new(r"(?s)class\s+([A-Za-z_]\w*)[^{]*\{.*?companion\s+object[^{]*\{(.*?)\}")
-            .expect("companion regex");
-    let companion_decl_regex =
-        Regex::new(r"(?s)class\s+([A-Za-z_]\w*)[^{]*\{.*?\bcompanion\s+object\b")
-            .expect("companion declaration regex");
-    let companion_member_regex =
-        Regex::new(r"(?m)^\s*(?:public\s+)?(?:fun|const\s+val|val|var)\s+([A-Za-z_]\w*)")
-            .expect("companion member regex");
-    let companion_extension_member_regex = Regex::new(
-        r"(?m)^\s*(?:public\s+)?(?:suspend\s+)?(?:inline\s+)?(?:fun|val|var)\s*(?:<[^>\n]+>\s*)?([A-Za-z_][A-Za-z0-9_\.]*)\s*\.\s*(?:Companion|companion)\s*\.\s*([A-Za-z_]\w*)",
-    )
-    .expect("companion extension member regex");
 
     for file in &snapshot.kotlin_files {
         for captures in class_header_regex.captures_iter(&file.contents) {
@@ -494,31 +482,7 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
             members.insert(captures[1].to_string());
         }
 
-        for captures in companion_decl_regex.captures_iter(&file.contents) {
-            let class_name = captures[1].to_string();
-            companion_members.entry(class_name).or_default();
-        }
-
-        for captures in companion_block_regex.captures_iter(&file.contents) {
-            let class_name = captures[1].to_string();
-            let members = companion_members.entry(class_name).or_default();
-            for member_capture in companion_member_regex.captures_iter(&captures[2]) {
-                members.insert(member_capture[1].to_string());
-            }
-        }
-
-        for captures in companion_extension_member_regex.captures_iter(&file.contents) {
-            let class_name = captures[1]
-                .split('.')
-                .next_back()
-                .unwrap_or(&captures[1])
-                .to_string();
-            let member_name = captures[2].to_string();
-            companion_members
-                .entry(class_name)
-                .or_default()
-                .insert(member_name);
-        }
+        merge_companion_members_from_ast(&file.contents, &mut companion_members);
     }
 
     for contract in analysis
@@ -552,6 +516,186 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
         companion_members,
         top_level_members_by_kt_type,
     }
+}
+
+fn merge_companion_members_from_ast(
+    source: &str,
+    companion_members: &mut HashMap<String, HashSet<String>>,
+) {
+    let mut parser = TsParser::new();
+    if parser
+        .set_language(&tree_sitter_kotlin::language())
+        .is_err()
+    {
+        return;
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return;
+    };
+    let root = tree.root_node();
+
+    let mut class_names_with_companion = HashSet::<String>::new();
+    collect_companion_declarations(
+        root,
+        source,
+        &mut class_names_with_companion,
+        companion_members,
+    );
+    collect_companion_extensions(root, source, companion_members);
+    for class_name in class_names_with_companion {
+        companion_members.entry(class_name).or_default();
+    }
+}
+
+fn collect_companion_declarations(
+    node: Node<'_>,
+    source: &str,
+    class_names_with_companion: &mut HashSet<String>,
+    companion_members: &mut HashMap<String, HashSet<String>>,
+) {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "class_declaration"
+            && let Some(class_name_node) = first_named_child_of_kind_ts(current, "type_identifier")
+            && let Some(class_name) = node_text_ts(class_name_node, source).map(str::to_string)
+            && let Some(class_body) = first_named_child_of_kind_ts(current, "class_body")
+        {
+            let mut cursor = class_body.walk();
+            for child in class_body.named_children(&mut cursor) {
+                if child.kind() != "companion_object" && child.kind() != "object_declaration" {
+                    continue;
+                }
+                let object_text = node_text_ts(child, source).unwrap_or_default();
+                if child.kind() != "companion_object" && !object_text.contains("companion") {
+                    continue;
+                }
+                class_names_with_companion.insert(class_name.clone());
+                let members = companion_members.entry(class_name.clone()).or_default();
+                let mut obj_cursor = child.walk();
+                for member in child.named_children(&mut obj_cursor) {
+                    match member.kind() {
+                        "function_declaration" => {
+                            if let Some(name_node) =
+                                first_named_child_of_kind_ts(member, "simple_identifier")
+                                && let Some(name) = node_text_ts(name_node, source)
+                            {
+                                members.insert(name.to_string());
+                            }
+                        }
+                        "property_declaration" => {
+                            if let Some(var_node) =
+                                first_named_child_of_kind_ts(member, "variable_declaration")
+                                && let Some(name_node) =
+                                    first_named_child_of_kind_ts(var_node, "simple_identifier")
+                                && let Some(name) = node_text_ts(name_node, source)
+                            {
+                                members.insert(name.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                for member in descendants_by_kind_ts(child, "function_declaration") {
+                    if let Some(name_node) =
+                        first_named_child_of_kind_ts(member, "simple_identifier")
+                        && let Some(name) = node_text_ts(name_node, source)
+                    {
+                        members.insert(name.to_string());
+                    }
+                }
+                for member in descendants_by_kind_ts(child, "property_declaration") {
+                    if let Some(var_node) =
+                        first_named_child_of_kind_ts(member, "variable_declaration")
+                        && let Some(name_node) =
+                            first_named_child_of_kind_ts(var_node, "simple_identifier")
+                        && let Some(name) = node_text_ts(name_node, source)
+                    {
+                        members.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+fn collect_companion_extensions(
+    node: Node<'_>,
+    source: &str,
+    companion_members: &mut HashMap<String, HashSet<String>>,
+) {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        match current.kind() {
+            "function_declaration" | "property_declaration" => {
+                let Some((owner, member)) = parse_companion_extension_from_node(current, source)
+                else {
+                    continue;
+                };
+                companion_members.entry(owner).or_default().insert(member);
+            }
+            _ => {}
+        }
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+fn parse_companion_extension_from_node(node: Node<'_>, source: &str) -> Option<(String, String)> {
+    let name_node = first_named_child_of_kind_ts(node, "simple_identifier")?;
+    let member = node_text_ts(name_node, source)?.trim();
+    if member.is_empty() {
+        return None;
+    }
+
+    let prefix = source
+        .get(node.start_byte()..name_node.start_byte())?
+        .trim_end();
+    let receiver_token = prefix
+        .trim_end_matches('.')
+        .split_whitespace()
+        .next_back()?;
+    let companion_dot = receiver_token.rfind('.')?;
+    let companion_segment = receiver_token[companion_dot + 1..].trim();
+    if companion_segment != "Companion" && companion_segment != "companion" {
+        return None;
+    }
+    let owner_path = receiver_token[..companion_dot].trim();
+    let owner = owner_path.rsplit('.').next()?.trim();
+    if owner.is_empty() {
+        return None;
+    }
+    Some((owner.to_string(), member.to_string()))
+}
+
+fn first_named_child_of_kind_ts<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|child| child.kind() == kind)
+}
+
+fn node_text_ts<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
+    source.get(node.start_byte()..node.end_byte())
+}
+
+fn descendants_by_kind_ts<'a>(node: Node<'a>, kind: &str) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        let mut cursor = current.walk();
+        for child in current.named_children(&mut cursor) {
+            if child.kind() == kind {
+                out.push(child);
+            }
+            stack.push(child);
+        }
+    }
+    out
 }
 
 fn parse_kotlin_parameter_list(raw: &str) -> Vec<Parameter> {
@@ -2600,11 +2744,13 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .all(|d| d.code != "companion_object_missing" && d.code != "companion_member_missing"),
+                .all(|d| d.code != "companion_object_missing"
+                    && d.code != "companion_member_missing"),
             "unexpected companion diagnostics: {:?}",
             diagnostics
                 .iter()
-                .filter(|d| d.code == "companion_object_missing" || d.code == "companion_member_missing")
+                .filter(|d| d.code == "companion_object_missing"
+                    || d.code == "companion_member_missing")
                 .collect::<Vec<_>>()
         );
     }
@@ -2656,11 +2802,13 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .all(|d| d.code != "companion_object_missing" && d.code != "companion_member_missing"),
+                .all(|d| d.code != "companion_object_missing"
+                    && d.code != "companion_member_missing"),
             "unexpected companion diagnostics: {:?}",
             diagnostics
                 .iter()
-                .filter(|d| d.code == "companion_object_missing" || d.code == "companion_member_missing")
+                .filter(|d| d.code == "companion_object_missing"
+                    || d.code == "companion_member_missing")
                 .collect::<Vec<_>>()
         );
     }

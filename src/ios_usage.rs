@@ -120,7 +120,8 @@ pub fn find_ios_usages(
             };
             let root = tree.root_node();
             let identifiers = collect_identifiers(root, &file.contents);
-            let (bindings, inheritance, member_calls) = collect_swift_semantics(root, &file.contents);
+            let (bindings, inheritance, member_calls) =
+                collect_swift_semantics(root, &file.contents);
             stage_ast.set_message(format!("Swift AST parse | last file: {}", file.path));
             stage_ast.inc(1);
             Some(ParsedSwiftFile {
@@ -152,15 +153,19 @@ pub fn find_ios_usages(
                 } else {
                     None
                 };
-                let strict_match = strict_outcome
-                    .unwrap_or_else(|| expected.iter().all(|token| file.identifiers.contains(token)));
+                let strict_match = strict_outcome.unwrap_or_else(|| {
+                    expected
+                        .iter()
+                        .all(|token| file.identifiers.contains(token))
+                });
                 let member_fallback = member_only_fallback_match(change, &file.identifiers);
                 let allow_fallback = change.kind != "member" || strict_outcome.is_none();
                 if strict_match || (allow_fallback && member_fallback) {
                     let evidence = if strict_match {
                         if change.kind == "member" {
-                            strict_member_evidence(change, file)
-                                .unwrap_or_else(|| expected.into_iter().collect::<Vec<_>>().join(", "))
+                            strict_member_evidence(change, file).unwrap_or_else(|| {
+                                expected.into_iter().collect::<Vec<_>>().join(", ")
+                            })
                         } else {
                             expected.into_iter().collect::<Vec<_>>().join(", ")
                         }
@@ -356,7 +361,11 @@ fn collect_identifiers(root: Node<'_>, source: &str) -> HashSet<String> {
 fn collect_swift_semantics(
     root: Node<'_>,
     source: &str,
-) -> (HashMap<String, String>, HashMap<String, HashSet<String>>, Vec<MemberCall>) {
+) -> (
+    HashMap<String, String>,
+    HashMap<String, HashSet<String>>,
+    Vec<MemberCall>,
+) {
     let mut bindings = HashMap::new();
     let mut inheritance = HashMap::<String, HashSet<String>>::new();
     let mut member_calls = Vec::new();
@@ -498,12 +507,10 @@ fn collect_member_call(node: Node<'_>, source: &str, out: &mut Vec<MemberCall>) 
         return;
     };
 
-    let receiver_node = target
-        .child_by_field_name("target")
-        .or_else(|| {
-            let mut target_cursor = target.walk();
-            target.named_children(&mut target_cursor).next()
-        });
+    let receiver_node = target.child_by_field_name("target").or_else(|| {
+        let mut target_cursor = target.walk();
+        target.named_children(&mut target_cursor).next()
+    });
     let Some(receiver_node) = receiver_node else {
         return;
     };
@@ -609,12 +616,10 @@ fn is_subtype_of(
     false
 }
 
-fn first_direct_named_child_of_kind<'tree>(
-    node: Node<'tree>,
-    kind: &str,
-) -> Option<Node<'tree>> {
+fn first_direct_named_child_of_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
     let mut cursor = node.walk();
-    node.named_children(&mut cursor).find(|child| child.kind() == kind)
+    node.named_children(&mut cursor)
+        .find(|child| child.kind() == kind)
 }
 
 fn canonical_type_name(raw: &str) -> Option<String> {
@@ -628,7 +633,11 @@ fn canonical_type_name(raw: &str) -> Option<String> {
     } else if let Some(stripped) = text.strip_prefix("any") {
         text = stripped.to_string();
     }
-    let mut text = text.trim().trim_end_matches('?').trim_end_matches('!').to_string();
+    let mut text = text
+        .trim()
+        .trim_end_matches('?')
+        .trim_end_matches('!')
+        .to_string();
     if let Some((head, _)) = text.split_once('<') {
         text = head.to_string();
     }
@@ -742,8 +751,14 @@ mod tests {
         let mut touched = HashSet::new();
         touched.insert(swift_rel.to_string());
 
-        let report = find_ios_usages(&changes, &repo, &[swift_rel.to_string()], "sharedSdk", &touched)
-            .expect("ios usage search should succeed");
+        let report = find_ios_usages(
+            &changes,
+            &repo,
+            &[swift_rel.to_string()],
+            "sharedSdk",
+            &touched,
+        )
+        .expect("ios usage search should succeed");
 
         assert_eq!(report.swift_files_total, 1);
         assert_eq!(report.candidate_files, 1);
@@ -815,9 +830,14 @@ mod tests {
             details: "changed `score`".to_string(),
         }];
 
-        let report =
-            find_ios_usages(&changes, &repo, &[swift_rel.to_string()], "shared", &HashSet::new())
-                .expect("ios usage search should succeed");
+        let report = find_ios_usages(
+            &changes,
+            &repo,
+            &[swift_rel.to_string()],
+            "shared",
+            &HashSet::new(),
+        )
+        .expect("ios usage search should succeed");
 
         assert_eq!(report.hits.len(), 1);
         assert_eq!(report.touched_hits, 0);

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.18
+
+### Summary
+- Improved MR reliability for Kotlin scope resolution and member-impact detection.
+
+### Changes
+- MR now uses a two-stage Kotlin loading flow:
+  - diff extraction on changed Kotlin files,
+  - automatic Kotlin scope expansion using related symbols across `commonMain` and `iosMain`.
+- Added `collect_git_paths_scoped` to include base snapshot Kotlin path universe in auto-scope expansion.
+- Companion API indexing in analyzer switched to AST-based extraction:
+  - companion declarations (`companion object`),
+  - companion members,
+  - companion extension members from separate files.
+- Regular Kotlin class extensions are now treated as `member` changes (not only top-level), enabling strict type-aware Swift call-site matching.
+- Added regression tests for:
+  - auto-scope token expansion/prefilter behavior,
+  - class extension member-level diff classification.
+
 ## 0.1.17
 
 ### Summary

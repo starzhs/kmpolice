@@ -120,6 +120,22 @@ pub fn collect_worktree_paths_scoped(
     collect_worktree_paths_from_git_list(&files, extension, &matcher, roots)
 }
 
+pub fn collect_git_paths_scoped(
+    repo: &Path,
+    git_ref: &str,
+    config: &Config,
+    extension: &str,
+) -> Result<Vec<String>> {
+    let matcher = config.path_matcher()?;
+    let files = git_ls_tree(repo, git_ref)?;
+    let roots = if extension == "swift" {
+        &config.ios_roots
+    } else {
+        &config.kotlin_roots
+    };
+    collect_worktree_paths_from_git_list(&files, extension, &matcher, roots)
+}
+
 fn collect_path_files(
     root: &Path,
     extension: &str,
