@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.16
+
+### Summary
+- Fixed false `companion_object_missing` / `companion_member_missing` diagnostics for companion extension APIs.
+
+### Changes
+- Kotlin companion index now recognizes companion declaration without body (`companion object`).
+- Kotlin companion index now includes extension members declared as:
+  - `fun <Type>.Companion.<member>(...)`
+  - `val/var <Type>.Companion.<member>`
+- Added regression test for scenario:
+  - companion declared in one file,
+  - companion extension member declared in another file,
+  - Swift usage via `<Type>.companion.<member>` should not produce missing-companion diagnostics.
+
 ## 0.1.15
 
 ### Summary

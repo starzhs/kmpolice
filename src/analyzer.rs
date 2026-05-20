@@ -400,9 +400,16 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
     let companion_block_regex =
         Regex::new(r"(?s)class\s+([A-Za-z_]\w*)[^{]*\{.*?companion\s+object[^{]*\{(.*?)\}")
             .expect("companion regex");
+    let companion_decl_regex =
+        Regex::new(r"(?s)class\s+([A-Za-z_]\w*)[^{]*\{.*?\bcompanion\s+object\b")
+            .expect("companion declaration regex");
     let companion_member_regex =
         Regex::new(r"(?m)^\s*(?:public\s+)?(?:fun|const\s+val|val|var)\s+([A-Za-z_]\w*)")
             .expect("companion member regex");
+    let companion_extension_member_regex = Regex::new(
+        r"(?m)^\s*(?:public\s+)?(?:suspend\s+)?(?:inline\s+)?(?:fun|val|var)\s*(?:<[^>\n]+>\s*)?([A-Za-z_]\w*)\.Companion\.([A-Za-z_]\w*)",
+    )
+    .expect("companion extension member regex");
 
     for file in &snapshot.kotlin_files {
         for captures in class_header_regex.captures_iter(&file.contents) {
@@ -487,12 +494,26 @@ fn build_kotlin_api_index(analysis: &AnalysisResult, snapshot: &ProjectSnapshot)
             members.insert(captures[1].to_string());
         }
 
+        for captures in companion_decl_regex.captures_iter(&file.contents) {
+            let class_name = captures[1].to_string();
+            companion_members.entry(class_name).or_default();
+        }
+
         for captures in companion_block_regex.captures_iter(&file.contents) {
             let class_name = captures[1].to_string();
             let members = companion_members.entry(class_name).or_default();
             for member_capture in companion_member_regex.captures_iter(&captures[2]) {
                 members.insert(member_capture[1].to_string());
             }
+        }
+
+        for captures in companion_extension_member_regex.captures_iter(&file.contents) {
+            let class_name = captures[1].to_string();
+            let member_name = captures[2].to_string();
+            companion_members
+                .entry(class_name)
+                .or_default()
+                .insert(member_name);
         }
     }
 
@@ -2529,6 +2550,58 @@ mod tests {
             diagnostics
                 .iter()
                 .any(|d| d.code == "companion_member_missing")
+        );
+    }
+
+    #[test]
+    fn does_not_report_companion_missing_when_member_is_defined_as_companion_extension() {
+        let snapshot = ProjectSnapshot {
+            label: "workspace".to_string(),
+            kotlin_files: vec![
+                SourceFile {
+                    path: "TCRoute.kt".to_string(),
+                    contents: r#"
+                        public data class Route(val name: String) {
+                            public companion object
+                        }
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+                SourceFile {
+                    path: "WebViewRoute.kt".to_string(),
+                    contents: r#"
+                        public fun Route.Companion.webViewRoute(url: String): Route =
+                            Route(name = "some name")
+                    "#
+                    .to_string(),
+                    snapshot: None,
+                },
+            ],
+            ios_files: vec![SourceFile {
+                path: "Use.swift".to_string(),
+                contents: r#"
+                    import shared
+                    func test() {
+                        _ = Route.companion.webViewRoute(url: "https://example.com")
+                    }
+                "#
+                .to_string(),
+                snapshot: None,
+            }],
+        };
+
+        let diagnostics =
+            compare_project(&snapshot, &Config::default()).expect("analysis should succeed");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code != "companion_object_missing" && d.code != "companion_member_missing"),
+            "unexpected companion diagnostics: {:?}",
+            diagnostics
+                .iter()
+                .filter(|d| d.code == "companion_object_missing" || d.code == "companion_member_missing")
+                .collect::<Vec<_>>()
         );
     }
 }
