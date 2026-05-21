@@ -89,6 +89,34 @@ brew update
 brew upgrade kmpolice
 ```
 
+## Install (APT, Linux)
+
+APT repository is published on GitHub Pages:
+- `https://starzhs.github.io/kmpolice`
+
+Signed repository (recommended, if `kmpolice-archive-keyring.asc` is present):
+
+```bash
+curl -fsSL https://starzhs.github.io/kmpolice/kmpolice-archive-keyring.asc \
+  | gpg --dearmor \
+  | sudo tee /usr/share/keyrings/kmpolice.gpg > /dev/null
+
+echo "deb [signed-by=/usr/share/keyrings/kmpolice.gpg] https://starzhs.github.io/kmpolice stable main" \
+  | sudo tee /etc/apt/sources.list.d/kmpolice.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y kmpolice
+```
+
+Unsigned fallback (testing only):
+
+```bash
+echo "deb [trusted=yes] https://starzhs.github.io/kmpolice stable main" \
+  | sudo tee /etc/apt/sources.list.d/kmpolice.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y kmpolice
+```
+
 ## Documentation
 
 - MR process report: `docs/mr-process-report.md`

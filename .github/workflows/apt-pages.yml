@@ -1,0 +1,158 @@
+name: apt-pages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (example: v0.1.20)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: apt-pages
+  cancel-in-progress: false
+
+jobs:
+  build-repo:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        name: Resolve tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${{ inputs.tag }}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils gnupg
+
+      - name: Download .deb from release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p debs
+          gh release download "${{ steps.meta.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "kmpolice_*_amd64.deb" \
+            --dir debs
+          ls -la debs
+
+      - name: Build apt repository layout
+        run: |
+          set -euo pipefail
+          ROOT="apt-repo"
+          mkdir -p "$ROOT/pool/main/k/kmpolice"
+          cp debs/*.deb "$ROOT/pool/main/k/kmpolice/"
+
+          mkdir -p "$ROOT/dists/stable/main/binary-amd64"
+          pushd "$ROOT" >/dev/null
+          dpkg-scanpackages --multiversion pool > dists/stable/main/binary-amd64/Packages
+          gzip -kf dists/stable/main/binary-amd64/Packages
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="kmpolice" \
+            -o APT::FTPArchive::Release::Label="kmpolice" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="amd64" \
+            -o APT::FTPArchive::Release::Components="main" \
+            release dists/stable > dists/stable/Release
+          popd >/dev/null
+
+          touch "$ROOT/.nojekyll"
+
+      - name: Sign repository metadata (optional)
+        if: ${{ secrets.APT_GPG_PRIVATE_KEY != '' && secrets.APT_GPG_KEY_ID != '' }}
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$APT_GPG_PRIVATE_KEY" > private.key
+          gpg --batch --import private.key
+          rm -f private.key
+
+          gpg --batch --yes \
+            --pinentry-mode loopback \
+            --passphrase "$APT_GPG_PASSPHRASE" \
+            --local-user "$APT_GPG_KEY_ID" \
+            --output apt-repo/dists/stable/InRelease \
+            --clearsign apt-repo/dists/stable/Release
+
+          gpg --batch --yes \
+            --pinentry-mode loopback \
+            --passphrase "$APT_GPG_PASSPHRASE" \
+            --local-user "$APT_GPG_KEY_ID" \
+            --output apt-repo/dists/stable/Release.gpg \
+            --detach-sign apt-repo/dists/stable/Release
+
+          gpg --armor --export "$APT_GPG_KEY_ID" > apt-repo/kmpolice-archive-keyring.asc
+
+      - name: Add unsigned repo notice
+        if: ${{ secrets.APT_GPG_PRIVATE_KEY == '' || secrets.APT_GPG_KEY_ID == '' }}
+        run: |
+          cat > apt-repo/UNSIGNED.txt <<'EOF'
+          Repository is not signed because APT_GPG_PRIVATE_KEY / APT_GPG_KEY_ID secrets are not configured.
+          For testing, add source as:
+            deb [trusted=yes] <PAGES_URL> stable main
+          EOF
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt-repo
+
+  deploy:
+    needs: build-repo
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Wait for Pages propagation
+        run: sleep 20
+
+      - name: Install from apt repo
+        env:
+          REPO_URL: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          set -euo pipefail
+          if curl -fsI "$REPO_URL/dists/stable/InRelease" >/dev/null; then
+            curl -fsSL "$REPO_URL/kmpolice-archive-keyring.asc" \
+              | gpg --dearmor \
+              | sudo tee /usr/share/keyrings/kmpolice.gpg >/dev/null
+            echo "deb [signed-by=/usr/share/keyrings/kmpolice.gpg] $REPO_URL stable main" \
+              | sudo tee /etc/apt/sources.list.d/kmpolice.list >/dev/null
+          else
+            echo "deb [trusted=yes] $REPO_URL stable main" \
+              | sudo tee /etc/apt/sources.list.d/kmpolice.list >/dev/null
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y kmpolice
+          kmpolice --version

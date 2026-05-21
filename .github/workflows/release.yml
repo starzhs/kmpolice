@@ -41,6 +41,14 @@ jobs:
           cp target/${{ matrix.target }}/release/kmpolice dist/kmpolice
           tar -C dist -czf kmpolice-${{ matrix.target }}.tar.gz kmpolice
           shasum -a 256 kmpolice-${{ matrix.target }}.tar.gz > kmpolice-${{ matrix.target }}.tar.gz.sha256
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+              VERSION="$(grep '^version = ' Cargo.toml | head -n1 | cut -d'\"' -f2)"
+            fi
+            ./scripts/build-deb.sh target/${{ matrix.target }}/release/kmpolice "$VERSION" amd64 dist
+            shasum -a 256 dist/kmpolice_${VERSION}_amd64.deb > dist/kmpolice_${VERSION}_amd64.deb.sha256
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -49,6 +57,8 @@ jobs:
           path: |
             kmpolice-${{ matrix.target }}.tar.gz
             kmpolice-${{ matrix.target }}.tar.gz.sha256
+            dist/*.deb
+            dist/*.deb.sha256
 
   publish:
     needs: build
@@ -67,6 +77,7 @@ jobs:
           mkdir -p out
           find release-assets -type f -name "*.tar.gz" -exec cp {} out/ \;
           find release-assets -type f -name "*.sha256" -exec cp {} out/ \;
+          find release-assets -type f -name "*.deb" -exec cp {} out/ \;
           ls -la out
 
       - name: Create GitHub release
