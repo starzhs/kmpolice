@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.21
+
+### Summary
+- Improved MR runtime responsiveness and aligned process exit behavior with diagnostic severity.
+
+### Changes
+- Snapshot loading is now parallelized for both:
+  - git-ref snapshot reads (`git show`)
+  - worktree snapshot reads (`read_to_string`)
+- Added progress bars for both snapshot sources with consistent completion messages.
+- Changed CLI exit-code behavior:
+  - returns `1` only when at least one `error` diagnostic exists,
+  - returns `0` for `info`/`warning`-only runs.
+- Added unit tests for exit-code severity behavior.
+- Updated docs (`README.md`, `docs/mr-process-report.md`, `docs/mr-diagnostics-algorithm.md`) to match runtime behavior.
+
 ## 0.1.20
 
 ### Summary

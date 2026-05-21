@@ -6,7 +6,7 @@ This document defines how diagnostics are produced in MR mode from Kotlin API ch
 - MR runner: `run_mr(...)`
   - Code: `src/mr.rs:36`
 - CLI exit code decision:
-  - Code: `src/lib.rs:43`
+  - Code: `src/lib.rs` (`exit_code_for_diagnostics`)
 
 ## Inputs
 1. Kotlin-side diagnostics diff (base -> head/worktree)
@@ -83,9 +83,9 @@ Severity source:
   - `src/lib.rs:38`
 
 ## Program Termination Rule
-- Exit code `0` when final diagnostics list is empty.
-- Exit code `1` when final diagnostics list is non-empty.
-- Code: `src/lib.rs:43`
+- Exit code `0` when final diagnostics contain no `error` severity.
+- Exit code `1` when final diagnostics contain at least one `error`.
+- Code: `src/lib.rs` (`exit_code_for_diagnostics`)
 
 ## Practical Meaning
 - If a Kotlin API change exists and matching iOS usage is found, the tool emits category-specific MR impact diagnostics.

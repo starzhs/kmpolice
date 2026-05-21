@@ -71,8 +71,8 @@ Fallback behavior:
 - If receiver type cannot be resolved from local AST context, token-based fallback is still used to avoid dropping valid hits in unresolved cross-file/module scenarios.
 
 Exit code:
-- `0` when no diagnostics
-- `1` when diagnostics exist
+- `0` when diagnostics contain only `info`/`warning` (or no diagnostics)
+- `1` when at least one `error` diagnostic exists
 - `2` on runtime/tooling error
 
 ## Install (Homebrew)

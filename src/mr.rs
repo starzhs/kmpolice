@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
-use regex::Regex;
 use rayon::prelude::*;
+use regex::Regex;
 use tree_sitter::{Node, Parser};
 
 use crate::analyzer::{compare_project, introduced_diagnostics};
@@ -406,7 +406,10 @@ fn collect_swift_scope_hints(
     hints
 }
 
-fn extract_swift_scope_hints_from_contents(contents: &str, shared_sdk_name: &str) -> HashSet<String> {
+fn extract_swift_scope_hints_from_contents(
+    contents: &str,
+    shared_sdk_name: &str,
+) -> HashSet<String> {
     let mut out = HashSet::new();
     if !contains_shared_import_for_scope(contents, shared_sdk_name) {
         return out;
@@ -452,7 +455,8 @@ fn extract_swift_scope_hints_from_contents(contents: &str, shared_sdk_name: &str
     .into_iter()
     .collect();
 
-    let type_identifier_regex = Regex::new(r"\b([A-Z][A-Za-z_0-9]*)\b").expect("type identifier regex");
+    let type_identifier_regex =
+        Regex::new(r"\b([A-Z][A-Za-z_0-9]*)\b").expect("type identifier regex");
     for captures in type_identifier_regex.captures_iter(contents) {
         let token = captures[1].to_string();
         if common_swift_types.contains(token.as_str()) {
@@ -1571,8 +1575,7 @@ mod tests {
     use super::{
         ApiChange, build_ios_impact_diagnostics, change_owner_type_names, diff_first_class_symbols,
         extract_swift_scope_hints_from_contents, kotlin_file_may_be_related,
-        parse_extension_receiver_expr_from_prefix,
-        top_level_change_symbols,
+        parse_extension_receiver_expr_from_prefix, top_level_change_symbols,
     };
     use crate::config::{Config, Severity};
     use crate::ios_usage::{IosUsageHit, IosUsageReport};

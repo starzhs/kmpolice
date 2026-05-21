@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::collections::HashSet;
 use walkdir::WalkDir;
 
@@ -243,7 +244,6 @@ fn collect_git_files(
     roots: &[String],
     changed_paths: Option<&HashSet<String>>,
 ) -> Result<Vec<SourceFile>> {
-    let mut files = Vec::new();
     let mut candidates = Vec::new();
 
     for path in paths {
@@ -274,7 +274,7 @@ fn collect_git_files(
             }
         }
 
-        candidates.push(path);
+        candidates.push(path.to_string());
     }
 
     let progress = ProgressBar::new(candidates.len() as u64);
@@ -290,19 +290,19 @@ fn collect_git_files(
         git_ref, extension
     ));
 
-    for path in candidates.iter() {
-        progress.set_message(format!(
-            "Snapshot load {} .{} | last file: {}",
-            git_ref, extension, path
-        ));
-        let contents = git_show(repo, git_ref, path)?;
-        files.push(SourceFile {
-            path: (*path).clone(),
-            contents,
-            snapshot: Some(git_ref.to_string()),
-        });
-        progress.inc(1);
-    }
+    let files: Vec<SourceFile> = candidates
+        .par_iter()
+        .map(|path| -> Result<SourceFile> {
+            let contents = git_show(repo, git_ref, path)?;
+            progress.inc(1);
+            Ok(SourceFile {
+                path: path.clone(),
+                contents,
+                snapshot: Some(git_ref.to_string()),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     progress.finish_with_message(format!("Snapshot load {} .{} | done", git_ref, extension));
 
     Ok(files)
@@ -316,7 +316,7 @@ fn collect_worktree_git_list_files(
     roots: &[String],
     changed_paths: Option<&HashSet<String>>,
 ) -> Result<Vec<SourceFile>> {
-    let mut collected = Vec::new();
+    let mut candidates = Vec::new();
 
     for path in files {
         if is_ignored_generated_path(path) {
@@ -348,16 +348,39 @@ fn collect_worktree_git_list_files(
             }
         }
 
-        let absolute_path = repo.join(path);
-        let contents = fs::read_to_string(&absolute_path)
-            .with_context(|| format!("failed to read source file {}", absolute_path.display()))?;
-
-        collected.push(SourceFile {
-            path: relative,
-            contents,
-            snapshot: Some("WORKTREE".to_string()),
-        });
+        candidates.push(relative);
     }
+
+    let progress = ProgressBar::new(candidates.len() as u64);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} {msg:<72} [{bar:30.cyan/blue}] {pos}/{len} ({percent}%)",
+        )
+        .expect("snapshot progress style")
+        .progress_chars("=> "),
+    );
+    progress.set_message(format!(
+        "Snapshot load WORKTREE .{} | waiting...",
+        extension
+    ));
+
+    let collected: Vec<SourceFile> = candidates
+        .par_iter()
+        .map(|relative| -> Result<SourceFile> {
+            let absolute_path = repo.join(relative);
+            let contents = fs::read_to_string(&absolute_path).with_context(|| {
+                format!("failed to read source file {}", absolute_path.display())
+            })?;
+            progress.inc(1);
+            Ok(SourceFile {
+                path: relative.clone(),
+                contents,
+                snapshot: Some("WORKTREE".to_string()),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    progress.finish_with_message(format!("Snapshot load WORKTREE .{} | done", extension));
 
     Ok(collected)
 }

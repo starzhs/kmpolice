@@ -13,7 +13,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{Cli, OutputFormat};
-use config::Config;
+use config::{Config, Severity};
+use model::Diagnostic;
 use mr::{render_ios_usage_report, render_mr_debug, render_verbose_changes, run_mr};
 use report::{render_json, render_text};
 
@@ -49,5 +50,63 @@ pub fn run() -> Result<i32> {
 
     println!("{output}");
 
-    Ok(if diagnostics.is_empty() { 0 } else { 1 })
+    Ok(exit_code_for_diagnostics(&diagnostics))
+}
+
+fn exit_code_for_diagnostics(diagnostics: &[Diagnostic]) -> i32 {
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exit_code_for_diagnostics;
+    use crate::config::Severity;
+    use crate::model::Diagnostic;
+
+    fn diagnostic_with_severity(severity: Severity) -> Diagnostic {
+        Diagnostic {
+            code: "test".to_string(),
+            severity,
+            message: String::new(),
+            hint: String::new(),
+            kotlin_symbol: None,
+            ios_symbol: None,
+            member: None,
+            kotlin_location: None,
+            ios_location: None,
+            base_ref: None,
+            head_ref: None,
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn exit_code_is_zero_when_no_diagnostics() {
+        assert_eq!(exit_code_for_diagnostics(&[]), 0);
+    }
+
+    #[test]
+    fn exit_code_is_zero_for_info_and_warning_only() {
+        let diagnostics = vec![
+            diagnostic_with_severity(Severity::Info),
+            diagnostic_with_severity(Severity::Warning),
+        ];
+        assert_eq!(exit_code_for_diagnostics(&diagnostics), 0);
+    }
+
+    #[test]
+    fn exit_code_is_one_when_any_error_present() {
+        let diagnostics = vec![
+            diagnostic_with_severity(Severity::Info),
+            diagnostic_with_severity(Severity::Error),
+        ];
+        assert_eq!(exit_code_for_diagnostics(&diagnostics), 1);
+    }
 }

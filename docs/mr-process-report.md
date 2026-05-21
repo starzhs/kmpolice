@@ -15,8 +15,8 @@ The active flow is MR-oriented:
    - current worktree (staged/unstaged/untracked)
 3. Scope Kotlin changes to `*.kt` under `commonMain` and `iosMain`.
 4. Load scoped snapshots:
-   - base snapshot from git ref
-   - head snapshot from worktree
+   - base snapshot from git ref (parallel file reads)
+   - head snapshot from worktree (parallel file reads)
 5. Compute Kotlin API changes (`api_changes`) from scoped files.
 6. Scan Swift usage for these changes.
 7. Emit introduced diagnostics + MR impact diagnostics.
@@ -78,6 +78,6 @@ Diagnostics include evidence and touched/untouched Swift status.
 
 - Output formats: `text`, `json`
 - Exit code:
-  - `0` no diagnostics
-  - `1` diagnostics found
+  - `0` only `info`/`warning` diagnostics (or no diagnostics)
+  - `1` at least one `error` diagnostic
   - `2` runtime/tooling error
