@@ -10,6 +10,7 @@
   - git-ref snapshot reads (`git show`)
   - worktree snapshot reads (`read_to_string`)
 - Added progress bars for both snapshot sources with consistent completion messages.
+- Linux release artifacts are now built inside `debian:12`, so the GNU binary stays compatible with Debian 12 (`glibc 2.36`) instead of requiring the newer glibc from Ubuntu 24.04.
 - Changed CLI exit-code behavior:
   - returns `1` only when at least one `error` diagnostic exists,
   - returns `0` for `info`/`warning`-only runs.

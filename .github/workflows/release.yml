@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-macos:
     strategy:
       fail-fast: false
       matrix:
@@ -19,8 +19,6 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-14
             target: aarch64-apple-darwin
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
 
@@ -41,14 +39,6 @@ jobs:
           cp target/${{ matrix.target }}/release/kmpolice dist/kmpolice
           tar -C dist -czf kmpolice-${{ matrix.target }}.tar.gz kmpolice
           shasum -a 256 kmpolice-${{ matrix.target }}.tar.gz > kmpolice-${{ matrix.target }}.tar.gz.sha256
-          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
-              VERSION="$(grep '^version = ' Cargo.toml | head -n1 | cut -d'\"' -f2)"
-            fi
-            ./scripts/build-deb.sh target/${{ matrix.target }}/release/kmpolice "$VERSION" amd64 dist
-            shasum -a 256 dist/kmpolice_${VERSION}_amd64.deb > dist/kmpolice_${VERSION}_amd64.deb.sha256
-          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -57,11 +47,59 @@ jobs:
           path: |
             kmpolice-${{ matrix.target }}.tar.gz
             kmpolice-${{ matrix.target }}.tar.gz.sha256
+
+  build-linux:
+    runs-on: ubuntu-24.04
+    container: debian:12
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl build-essential git binutils
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Prepare archive
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/kmpolice dist/kmpolice
+          tar -C dist -czf kmpolice-x86_64-unknown-linux-gnu.tar.gz kmpolice
+          sha256sum kmpolice-x86_64-unknown-linux-gnu.tar.gz > kmpolice-x86_64-unknown-linux-gnu.tar.gz.sha256
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION="$(grep '^version = ' Cargo.toml | head -n1 | cut -d'\"' -f2)"
+          fi
+          ./scripts/build-deb.sh target/x86_64-unknown-linux-gnu/release/kmpolice "$VERSION" amd64 dist
+          sha256sum dist/kmpolice_${VERSION}_amd64.deb > dist/kmpolice_${VERSION}_amd64.deb.sha256
+
+      - name: Check glibc requirement
+        run: |
+          readelf --version-info target/x86_64-unknown-linux-gnu/release/kmpolice | grep 'GLIBC_' | sort -Vu
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmpolice-x86_64-unknown-linux-gnu
+          path: |
+            kmpolice-x86_64-unknown-linux-gnu.tar.gz
+            kmpolice-x86_64-unknown-linux-gnu.tar.gz.sha256
             dist/*.deb
             dist/*.deb.sha256
 
   publish:
-    needs: build
+    needs:
+      - build-macos
+      - build-linux
     runs-on: ubuntu-24.04
 
     steps:
